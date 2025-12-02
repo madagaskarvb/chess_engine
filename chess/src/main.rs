@@ -878,11 +878,27 @@ fn print_board(board: &BoardState) {
 
 //MOVE EXECUTION-------------------------------------------------------------------------------------------
 
-fn make_move(board: &mut BoardState, from: u8, to: u8) -> bool {
-    // Find which piece is moving
-    let mut moving_piece = None;
-    let start_range = if board.white_to_move { 0 } else { 6 };
-    let end_range = if board.white_to_move { 6 } else { 12 };
+struct Move {
+    from : u8,
+    to : u8,
+    piece : usize,
+    captured_piece : Option<usize>,
+    promotion : Option <usize>,
+    castling_move: bool,
+    en_passant: bool,
+    previous_castling_rights : (bool, bool, bool, bool),
+    previous_en_passant_target: Option<u8>,
+}
+
+fn make_move(board: &mut BoardState, from: u8, to: u8) -> Option<Move> {
+    let previous_castling: (bool, bool, bool, bool) = (board.white_kingside_castle,
+    board.white_queenside_castle,
+    board.black_king_in_check,
+    board.black_queenside_castle);
+
+    let mut moving_piece: Option<usize> = None; 
+    let start_range: usize = if board.white_to_move { 0 } else { 6 };
+    let end_range: usize = if board.white_to_move { 6 } else { 12 };
     
     for piece_type in start_range..end_range {
         if get_bit(board.bitboards[piece_type], from) {
@@ -891,20 +907,19 @@ fn make_move(board: &mut BoardState, from: u8, to: u8) -> bool {
         }
     }
     
-    let moving_piece = match moving_piece {
+    let moving_piece: usize = match moving_piece {
         Some(p) => p,
         None => return false,
     };
     
-    // Handle castling moves first
     if (moving_piece == WK || moving_piece == BK) && (from as i32 - to as i32).abs() == 2 {
         return make_castling_move(board, from, to, moving_piece == WK);
     }
     
     // Handle captures
-    let mut captured_piece = None;
-    let enemy_start = if board.white_to_move { 6 } else { 0 };
-    let enemy_end = if board.white_to_move { 12 } else { 6 };
+    let mut captured_piece: Option<usize> = None;
+    let enemy_start: usize = if board.white_to_move { 6 } else { 0 };
+    let enemy_end: usize = if board.white_to_move { 12 } else { 6 };
     
     for piece_type in enemy_start..enemy_end {
         if get_bit(board.bitboards[piece_type], to) {
@@ -922,20 +937,72 @@ fn make_move(board: &mut BoardState, from: u8, to: u8) -> bool {
     
     set_bit(&mut board.bitboards[moving_piece], to);
     
-    // Update castling rights if king or rook moves
     if moving_piece == WK || moving_piece == BK {
         board.king_moved(moving_piece == WK);
     } else if moving_piece == WR || moving_piece == BR {
         board.rook_moved(from, moving_piece == WR);
     }
     
-    // Switch sides
     board.white_to_move = !board.white_to_move;
     
-    // Update check status after the move
     board.update_check_status();
     
-    true
+    Some(Move {
+        from,
+        to,
+        piece: moving_piece,
+        captured_piece,
+        promotion: None,
+        castling_move : false,
+        en_passant: false,
+        previous_castling_rights : previous_castling,
+        previous_en_passant_target : None,
+    })
+}
+
+fn unmake_move(board: &mut BoardState, mv: &Move) {
+    board.white_to_move = !board.white_to_move;
+    
+    clear_bit(&mut board.bitboards[mv.piece], mv.to);
+    set_bit(&mut board.bitboards[mv.piece], mv.from);
+    
+    if let Some(captured_piece) = mv.captured_piece {
+        if mv.en_passant {
+            let captured_square: u8 = if board.white_to_move {
+                mv.to + 8
+            } else {
+                mv.to - 8
+            };
+            set_bit(&mut board.bitboards[captured_piece], captured_square);
+        } else {
+            set_bit(&mut board.bitboards[captured_piece], mv.to);
+        }
+    }
+    
+    if mv.castling_move {
+        if mv.to == 62 { 
+            clear_bit(&mut board.bitboards[WR], 61);
+            set_bit(&mut board.bitboards[WR], 63);
+        } else if mv.to == 58 { 
+            clear_bit(&mut board.bitboards[WR], 59);
+            set_bit(&mut board.bitboards[WR], 56);
+        } else if mv.to == 6 {
+            clear_bit(&mut board.bitboards[BR], 5);
+            set_bit(&mut board.bitboards[BR], 7);
+        } else if mv.to == 2 {
+            clear_bit(&mut board.bitboards[BR], 3);
+            set_bit(&mut board.bitboards[BR], 0);
+        }
+    }
+    
+    board.white_kingside_castle = mv.previous_castling_rights.0;
+    board.white_queenside_castle = mv.previous_castling_rights.1;
+    board.black_kingside_castle = mv.previous_castling_rights.2;
+    board.black_queenside_castle = mv.previous_castling_rights.3;
+    
+    board.en_passant_target = mv.previous_en_passant_target;
+    
+    board.update_check_status();
 }
 
 fn make_castling_move(board: &mut BoardState, from: u8, to: u8, white: bool) -> bool {
@@ -953,15 +1020,12 @@ fn make_castling_move(board: &mut BoardState, from: u8, to: u8, white: bool) -> 
         }
     };
     
-    // Move king
     clear_bit(&mut board.bitboards[if white { WK } else { BK }], king_from);
     set_bit(&mut board.bitboards[if white { WK } else { BK }], king_to);
     
-    // Move rook
     clear_bit(&mut board.bitboards[if white { WR } else { BR }], rook_from);
     set_bit(&mut board.bitboards[if white { WR } else { BR }], rook_to);
     
-    // Update castling rights
     if white {
         board.white_kingside_castle = false;
         board.white_queenside_castle = false;
@@ -970,16 +1034,44 @@ fn make_castling_move(board: &mut BoardState, from: u8, to: u8, white: bool) -> 
         board.black_queenside_castle = false;
     }
     
-    // Switch sides
     board.white_to_move = !board.white_to_move;
     
-    // Update check status
     board.update_check_status();
     
     true
 }
 
 //END OF MOVE EXECUTION-----------------------------------------------------------------------------------
+
+
+//MOVE HISTORY--------------------------------------------------------------------------------------------
+
+struct SearchState {
+    move_history: Vec<Move>,
+    board: BoardState,
+}
+
+impl SearchState {
+    fn make_move(&mut self, from: u8, to: u8) -> bool {
+        if let Some(mv) = make_move(&mut self.board, from, to) {
+            self.move_history.push(mv);
+            true
+        } else {
+            false
+        }
+    }
+    
+    fn unmake_move(&mut self) -> bool {
+        if let Some(mv) = self.move_history.pop() {
+            unmake_move(&mut self.board, &mv);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+//END OF MOVE HISTORY-------------------------------------------------------------------------------------
 
 
 //EVALUATION----------------------------------------------------------------------------------------------
@@ -1102,9 +1194,26 @@ fn test_evaluation() {
     println!("(Should show advantage for white due to better knight placement)");
 }
 
+
+fn test_unmake_move() {
+    let mut board = BoardState::new();
+    let initial_hash = compute_board_hash(&board); // You'll need a hash function
+    
+    // Make a move
+    let mv = make_move(&mut board, 52, 36); // e2-e4
+    
+    // Unmake it
+    unmake_move(&mut board, &mv);
+    
+    let final_hash = compute_board_hash(&board);
+    assert_eq!(initial_hash, final_hash, "Board state not restored!");
+}
+
+
 //END OF TESTS--------------------------------------------------------------------------------------------
 
 //BOARD STATE---------------------------------------------------------------------------------------------
+
 
 #[derive(Clone, Copy)]
 struct BoardState {
@@ -1116,6 +1225,7 @@ struct BoardState {
     black_queenside_castle: bool,
     white_king_in_check: bool,
     black_king_in_check: bool,
+    en_passant_target: Option<u8>,
 }
 
 impl BoardState {
