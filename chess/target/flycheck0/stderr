@@ -1,14 +1,60 @@
-   0.026489000s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint: stale: changed "C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\src\\main.rs"
-   0.026523000s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint:           (vs) "C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\target\\debug\\.fingerprint\\chess-5d65189c553cedcb\\dep-bin-chess"
-   0.026532500s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 13409141912, nanos: 221852000 } < FileTime { seconds: 13409149051, nanos: 718502600 }
-   0.026794200s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint: fingerprint dirty for chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess)/Check { test: false }/TargetInner { name: "chess", doc: true, ..: with_path("C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\src\\main.rs", Edition2024) }
-   0.026861200s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\target\\debug\\.fingerprint\\chess-5d65189c553cedcb\\dep-bin-chess", reference_mtime: FileTime { seconds: 13409141912, nanos: 221852000 }, stale: "C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\src\\main.rs", stale_mtime: FileTime { seconds: 13409149051, nanos: 718502600 } }))
-   0.028050300s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint: stale: changed "C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\src\\main.rs"
-   0.028062200s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint:           (vs) "C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\target\\debug\\.fingerprint\\chess-7fd891dd7a04aede\\dep-test-bin-chess"
-   0.028078900s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 13409141912, nanos: 221852000 } < FileTime { seconds: 13409149051, nanos: 718502600 }
-   0.028342200s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint: fingerprint dirty for chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess)/Check { test: true }/TargetInner { name: "chess", doc: true, ..: with_path("C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\src\\main.rs", Edition2024) }
-   0.028359900s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\target\\debug\\.fingerprint\\chess-7fd891dd7a04aede\\dep-test-bin-chess", reference_mtime: FileTime { seconds: 13409141912, nanos: 221852000 }, stale: "C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\src\\main.rs", stale_mtime: FileTime { seconds: 13409149051, nanos: 718502600 } }))
+   0.049357600s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint: fingerprint error for chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess)/Check { test: false }/TargetInner { name: "chess", doc: true, ..: with_path("C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\src\\main.rs", Edition2024) }
+   0.049406400s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\studentcoll\Downloads\chess_engine\chess\target\debug\.fingerprint\chess-acb58ba741c326b7\bin-chess`
+
+Caused by:
+    Не удается найти указанный файл. (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_repo
+   6: git_filter_source_repo
+   7: git_filter_source_repo
+   8: git_filter_source_repo
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_libgit2_prerelease
+  12: <unknown>
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+   0.076985200s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint: fingerprint error for chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess)/Check { test: true }/TargetInner { name: "chess", doc: true, ..: with_path("C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\src\\main.rs", Edition2024) }
+   0.077012500s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\studentcoll\Downloads\chess_engine\chess\target\debug\.fingerprint\chess-fe748d04cb217941\test-bin-chess`
+
+Caused by:
+    Не удается найти указанный файл. (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_repo
+   6: git_filter_source_repo
+   7: git_filter_source_repo
+   8: git_filter_source_repo
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_libgit2_prerelease
+  12: <unknown>
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
     Checking chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess)
-error: could not compile `chess` (bin "chess") due to 6 previous errors; 4 warnings emitted
+error: could not compile `chess` (bin "chess" test) due to 4 previous errors; 5 warnings emitted
 warning: build failed, waiting for other jobs to finish...
-error: could not compile `chess` (bin "chess" test) due to 6 previous errors; 4 warnings emitted
+error: could not compile `chess` (bin "chess") due to 4 previous errors; 5 warnings emitted

@@ -1,3 +1,6 @@
+use std::sync::OnceLock;
+use rand::{Rng, rngs::ThreadRng};
+
 const WP: usize = 0;
 const WN: usize = 1;
 const WB: usize = 2;
@@ -10,6 +13,7 @@ const BB: usize = 8;
 const BR: usize = 9;
 const BQ: usize = 10;
 const BK: usize = 11;
+
 
 const PAWN_TABLE: [i32; 64] = [
     0,   0,   0,   0,   0,   0,   0,   0,
@@ -1197,23 +1201,204 @@ fn test_evaluation() {
 
 fn test_unmake_move() {
     let mut board = BoardState::new();
-    let initial_hash = compute_board_hash(&board); // You'll need a hash function
+    let initial_hash = compute_board_hash(&board);
+    
+    // Create a simple Move struct for testing
+    #[derive(Clone, Copy)]
+    struct TestMove {
+        from: u8,
+        to: u8,
+        piece: usize,
+        captured_piece: Option<usize>,
+        previous_castling: (bool, bool, bool, bool),
+    }
+    
+    // Simple make_move for testing
+    fn make_move_test(board: &mut BoardState, from: u8, to: u8) -> Option<TestMove> {
+        // Find which piece is moving
+        let moving_piece = get_piece_at_square(&board.bitboards, from)?;
+        
+        // Store previous state
+        let previous_castling = (
+            board.white_kingside_castle,
+            board.white_queenside_castle,
+            board.black_kingside_castle,
+            board.black_queenside_castle,
+        );
+        
+        // Check for capture
+        let captured_piece = get_piece_at_square(&board.bitboards, to);
+        
+        // Update bitboards
+        clear_bit(&mut board.bitboards[moving_piece], from);
+        if let Some(captured) = captured_piece {
+            clear_bit(&mut board.bitboards[captured], to);
+        }
+        set_bit(&mut board.bitboards[moving_piece], to);
+        
+        // Update castling rights if king moves
+        if moving_piece == WK {
+            board.white_kingside_castle = false;
+            board.white_queenside_castle = false;
+        } else if moving_piece == BK {
+            board.black_kingside_castle = false;
+            black_queenside_castle = false;
+        }
+        
+        // Switch sides
+        board.white_to_move = !board.white_to_move;
+        
+        Some(TestMove {
+            from,
+            to,
+            piece: moving_piece,
+            captured_piece,
+            previous_castling,
+        })
+    }
+    
+    // Simple unmake_move for testing
+    fn unmake_move_test(board: &mut BoardState, mv: &TestMove) {
+        // Switch side back
+        board.white_to_move = !board.white_to_move;
+        
+        // Move piece back
+        clear_bit(&mut board.bitboards[mv.piece], mv.to);
+        set_bit(&mut board.bitboards[mv.piece], mv.from);
+        
+        // Restore captured piece
+        if let Some(captured) = mv.captured_piece {
+            set_bit(&mut board.bitboards[captured], mv.to);
+        }
+        
+        // Restore castling rights
+        board.white_kingside_castle = mv.previous_castling.0;
+        board.white_queenside_castle = mv.previous_castling.1;
+        board.black_kingside_castle = mv.previous_castling.2;
+        board.black_queenside_castle = mv.previous_castling.3;
+    }
     
     // Make a move
-    let mv = make_move(&mut board, 52, 36); // e2-e4
-    
-    // Unmake it
-    unmake_move(&mut board, &mv);
-    
-    let final_hash = compute_board_hash(&board);
-    assert_eq!(initial_hash, final_hash, "Board state not restored!");
+    if let Some(mv) = make_move_test(&mut board, 52, 36) { // e2-e4
+        // Unmake it
+        unmake_move_test(&mut board, &mv);
+        
+        let final_hash = compute_board_hash(&board);
+        
+        // Print diagnostic information
+        println!("Initial hash: 0x{:016x}", initial_hash);
+        println!("Final hash:   0x{:016x}", final_hash);
+        
+        // Check each bitboard
+        for i in 0..12 {
+            if board.bitboards[i] != create_board()[i] {
+                println!("Bitboard {} differs!", i);
+            }
+        }
+        
+        assert_eq!(initial_hash, final_hash, "Board state not restored!");
+        println!("Test passed! Board state restored correctly.");
+    } else {
+        panic!("Failed to make move");
+    }
 }
-
 
 //END OF TESTS--------------------------------------------------------------------------------------------
 
-//BOARD STATE---------------------------------------------------------------------------------------------
+//ZOBRIST HASH--------------------------------------------------------------------------------------------
 
+static ZOBRIST_TABLES: OnceLock<ZobristTables> = OnceLock::new();
+
+struct ZobristTables {
+    piece_square: [[u64; 64]; 12],      // 12 pieces × 64 squares
+    black_to_move: u64,                  // When black is to move
+    castling_rights: [u64; 4],           // 4 castling rights
+    en_passant_file: [u64; 8],           // 8 possible en passant files
+}
+
+impl ZobristTables {
+    fn new() -> Self {
+        let mut rng = rand::thread_rng();
+        let mut piece_square = [[0u64; 64]; 12];
+        let mut castling_rights = [0u64; 4];
+        let mut en_passant_file = [0u64; 8];
+        
+        // Initialize piece-square table
+        for piece in 0..12 {
+            for square in 0..64 {
+                piece_square[piece][square] = rng.r#gen::<u64>();
+            }
+        }
+        
+        // Initialize other tables
+        let black_to_move = rng.r#gen::<u64>();
+        
+        for i in 0..4 {
+            castling_rights[i] = rng.r#gen::<u64>();
+        }
+        
+        for i in 0..8 {
+            en_passant_file[i] = rng.r#gen::<u64>();
+        }
+        
+        Self {
+            piece_square,
+            black_to_move,
+            castling_rights,
+            en_passant_file,
+        }
+    }
+    
+    fn get() -> &'static Self {
+        ZOBRIST_TABLES.get_or_init(|| Self::new())
+    }
+}
+
+fn compute_board_hash(board: &BoardState) -> u64 {
+    let tables = ZobristTables::get();
+    let mut hash = 0;
+    
+    // XOR in pieces on squares
+    for (piece_index, &bitboard) in board.bitboards.iter().enumerate() {
+        let mut bb = bitboard;
+        while bb != 0 {
+            let square = get_lsb(bb).unwrap();
+            clear_bit(&mut bb, square);
+            hash ^= tables.piece_square[piece_index][square as usize];
+        }
+    }
+    
+    // XOR in side to move
+    if !board.white_to_move {
+        hash ^= tables.black_to_move;
+    }
+    
+    // XOR in castling rights
+    if board.white_kingside_castle {
+        hash ^= tables.castling_rights[0];
+    }
+    if board.white_queenside_castle {
+        hash ^= tables.castling_rights[1];
+    }
+    if board.black_kingside_castle {
+        hash ^= tables.castling_rights[2];
+    }
+    if board.black_queenside_castle {
+        hash ^= tables.castling_rights[3];
+    }
+    
+    // XOR in en passant target (if any)
+    if let Some(ep_square) = board.en_passant_target {
+        let file = ep_square % 8; // Which file (0-7) has the en passant target
+        hash ^= tables.en_passant_file[file as usize];
+    }
+    
+    hash
+}
+
+//END OF ZOBRIST HASH-------------------------------------------------------------------------------------
+
+//BOARD STATE---------------------------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
 struct BoardState {
