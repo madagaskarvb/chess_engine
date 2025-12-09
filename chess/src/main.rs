@@ -1,5 +1,10 @@
 use std::sync::OnceLock;
-use rand::{Rng, rngs::ThreadRng};
+use rand::Rng;
+use std::sync::{RwLock, Arc};
+use std::sync::atomic::{AtomicU64, AtomicI32, Ordering};
+use std::time::{Duration, Instant};
+use rayon::prelude::*;
+
 
 const WP: usize = 0;
 const WN: usize = 1;
@@ -142,16 +147,19 @@ fn create_board() -> [u64; 12] {
 
 //UTILS-----------------------------------------------------------------------------------------------------
 
+#[inline]
 fn get_bit(bitboard: u64, square: u8) -> bool {
     return (bitboard >> square) & 1 != 0;
 }
 
 
+#[inline]
 fn set_bit(bitboard: &mut u64, square: u8) {
     *bitboard |= 1 << square;
 }
 
 
+#[inline]
 fn clear_bit(bitboard: &mut u64, square: u8) {
     *bitboard &= !(1 << square);
 }
@@ -161,7 +169,7 @@ fn count_bits(bitboard: u64) -> u32 {
     bitboard.count_ones()
 }
 
-
+#[inline]
 fn get_lsb(bitboard: u64) -> Option<u8> {
     if bitboard == 0 {
         None
@@ -222,8 +230,7 @@ fn get_piece_value(piece_type: usize) -> i32 {
 
 // COMPUTE ATTACKS-----------------------------------------------------------------------------------------
 
-static mut 
-KNIGHT_ATTACKS: [u64; 64] = [0; 64];
+static KNIGHT_ATTACKS: OnceLock<[u64; 64]> = OnceLock::new();
 
 fn precompute_knight_attacks() {
     let knight_moves = [
@@ -231,9 +238,11 @@ fn precompute_knight_attacks() {
         (1, 2), (1, -2), (-1, 2), (-1, -2)
     ];
     
+    let mut attacks = [0u64; 64];
+    
     for square in 0..64 {
         let (rank, file) = (square / 8, square % 8);
-        let mut attacks = 0;
+        let mut attack_mask = 0;
         
         for &(dr, df) in &knight_moves {
             let new_rank = rank as i32 + dr;
@@ -241,16 +250,18 @@ fn precompute_knight_attacks() {
             
             if new_rank >= 0 && new_rank < 8 && new_file >= 0 && new_file < 8 {
                 let target_square = (new_rank * 8 + new_file) as u8;
-                set_bit(&mut attacks, target_square);
+                set_bit(&mut attack_mask, target_square);
             }
         }
         
-        unsafe { KNIGHT_ATTACKS[square as usize] = attacks; }
+        attacks[square as usize] = attack_mask;
     }
+    
+    let _ = KNIGHT_ATTACKS.set(attacks);
 }
 
 
-static mut KING_ATTACKS: [u64; 64] = [0; 64];
+static KING_ATTACKS: OnceLock<[u64; 64]> = OnceLock::new();
 
 fn precompute_king_attacks() {
     let king_moves: [(i32, i32); 8] = [
@@ -258,9 +269,11 @@ fn precompute_king_attacks() {
         (1, 1), (1, -1), (-1, 1), (-1, -1)
     ];
     
+    let mut attacks = [0u64; 64];
+    
     for square in 0..64 {
         let (rank, file) = (square / 8, square % 8);
-        let mut attacks = 0;
+        let mut attack_mask = 0;
         
         for &(dr, df) in &king_moves {
             let new_rank = rank as i32 + dr;
@@ -268,41 +281,42 @@ fn precompute_king_attacks() {
             
             if new_rank >= 0 && new_rank < 8 && new_file >= 0 && new_file < 8 {
                 let target_square = (new_rank * 8 + new_file) as u8;
-                set_bit(&mut attacks, target_square);
+                set_bit(&mut attack_mask, target_square);
             }
         }
         
-        unsafe { KING_ATTACKS[square as usize] = attacks; }
+        attacks[square as usize] = attack_mask;
     }
+    
+    let _ = KING_ATTACKS.set(attacks);
 }
 
 
-static mut WHITE_PAWN_ATTACKS: [u64; 64] = [0; 64];
-static mut BLACK_PAWN_ATTACKS: [u64; 64] = [0; 64];
+static WHITE_PAWN_ATTACKS: OnceLock<[u64; 64]> = OnceLock::new();
+static BLACK_PAWN_ATTACKS: OnceLock<[u64; 64]> = OnceLock::new();
 
 fn precompute_pawn_attacks() {
+    let mut white_attacks = [0u64; 64];
+    let mut black_attacks = [0u64; 64];
+    
     for square in 0..64 {
         let (rank, file) = (square / 8, square % 8);
-        let mut white_attacks = 0;
-        let mut black_attacks = 0;
         
         // White pawns
         if rank < 7 {
-            if file > 0 { set_bit(&mut white_attacks, square + 7); } // up-left
-            if file < 7 { set_bit(&mut white_attacks, square + 9); } // up-right
+            if file > 0 { set_bit(&mut white_attacks[square as usize], square + 7); } // up-left
+            if file < 7 { set_bit(&mut white_attacks[square as usize], square + 9); } // up-right
         }
         
         // Black pawns
         if rank > 0 {
-            if file > 0 { set_bit(&mut black_attacks, square - 9); } // down-left
-            if file < 7 { set_bit(&mut black_attacks, square - 7); } // down-right
-        }
-        
-        unsafe {
-            WHITE_PAWN_ATTACKS[square as usize] = white_attacks;
-            BLACK_PAWN_ATTACKS[square as usize] = black_attacks;
+            if file > 0 { set_bit(&mut black_attacks[square as usize], square - 9); } // down-left
+            if file < 7 { set_bit(&mut black_attacks[square as usize], square - 7); } // down-right
         }
     }
+    
+    let _ = WHITE_PAWN_ATTACKS.set(white_attacks);
+    let _ = BLACK_PAWN_ATTACKS.set(black_attacks);
 }
 
 
@@ -436,18 +450,18 @@ fn generate_pawn_moves(board: &[u64; 12], moves: &mut Vec<(u8, u8)>, white: bool
             }
             
             // Captures
-            unsafe {
-                let attacks = WHITE_PAWN_ATTACKS[from_square as usize];
-                let mut attacks_copy = attacks;
-                while attacks_copy != 0 {
-                    let target_square = get_lsb(attacks_copy).unwrap();
-                    clear_bit(&mut attacks_copy, target_square);
-                    
-                    if get_bit(enemy_occupied, target_square) {
-                        moves.push((from_square, target_square));
-                    }
+            
+            let attacks = WHITE_PAWN_ATTACKS.get().unwrap()[from_square as usize];
+            let mut attacks_copy = attacks;
+            while attacks_copy != 0 {
+                let target_square = get_lsb(attacks_copy).unwrap();
+                clear_bit(&mut attacks_copy, target_square);
+                
+                if get_bit(enemy_occupied, target_square) {
+                    moves.push((from_square, target_square));
                 }
             }
+            
         } else { // Black pawns (moving downward)
             // Single push forward
             let single_push = from_square + 8;
@@ -465,7 +479,7 @@ fn generate_pawn_moves(board: &[u64; 12], moves: &mut Vec<(u8, u8)>, white: bool
             
             // Captures
             unsafe {
-                let attacks = BLACK_PAWN_ATTACKS[from_square as usize];
+                let attacks = BLACK_PAWN_ATTACKS.get().unwrap()[from_square as usize];
                 let mut attacks_copy = attacks;
                 while attacks_copy != 0 {
                     let target_square = get_lsb(attacks_copy).unwrap();
@@ -490,17 +504,15 @@ fn generate_knight_moves(board: &[u64; 12], moves: &mut Vec<(u8, u8)>, white: bo
         let from_square = get_lsb(knights_copy).unwrap();
         clear_bit(&mut knights_copy, from_square);
         
-        unsafe {
-            let attacks = KNIGHT_ATTACKS[from_square as usize];
-            let mut attacks_copy = attacks;
-            while attacks_copy != 0 {
-                let target_square = get_lsb(attacks_copy).unwrap();
-                clear_bit(&mut attacks_copy, target_square);
-                
-                // Only move to empty squares or enemy pieces
-                if !get_bit(friendly_occupied, target_square) {
-                    moves.push((from_square, target_square));
-                }
+        let attacks = KNIGHT_ATTACKS.get().unwrap()[from_square as usize];
+        let mut attacks_copy = attacks;
+        while attacks_copy != 0 {
+            let target_square = get_lsb(attacks_copy).unwrap();
+            clear_bit(&mut attacks_copy, target_square);
+            
+            // Only move to empty squares or enemy pieces
+            if !get_bit(friendly_occupied, target_square) {
+                moves.push((from_square, target_square));
             }
         }
     }
@@ -513,26 +525,30 @@ fn generate_king_moves(board: &[u64; 12], moves: &mut Vec<(u8, u8)>, white: bool
     
     if king != 0 {
         let from_square = get_lsb(king).unwrap();
-        
-        unsafe {
-            let attacks = KING_ATTACKS[from_square as usize];
-            let mut attacks_copy = attacks;
-            while attacks_copy != 0 {
-                let target_square = get_lsb(attacks_copy).unwrap();
-                clear_bit(&mut attacks_copy, target_square);
-                
-                if !get_bit(friendly_occupied, target_square) {
-                    moves.push((from_square, target_square));
-                }
+        let attacks = KING_ATTACKS.get().unwrap()[from_square as usize];
+        let mut attacks_copy = attacks;
+        while attacks_copy != 0 {
+            let target_square = get_lsb(attacks_copy).unwrap();
+            clear_bit(&mut attacks_copy, target_square);
+            
+            if !get_bit(friendly_occupied, target_square) {
+                moves.push((from_square, target_square));
             }
         }
         
-        // Add castling moves
+        // Fix: Pass all required parameters including the king square
         generate_castling_moves(board, moves, white, board_state, from_square);
     }
 }
 
-fn generate_castling_moves(board: &[u64; 12], moves: &mut Vec<(u8, u8)>, white: bool, board_state: &BoardState, king_square: u8) {
+
+fn generate_castling_moves(
+    board: &[u64; 12], 
+    moves: &mut Vec<(u8, u8)>, 
+    white: bool, 
+    board_state: &BoardState, 
+    _king_square: u8  // Add underscore since it's unused
+) {
     let all_occupied = get_all_occupied(*board);
     let enemy_attacks = complete_attacks_bitboard(board, !white);
     
@@ -540,68 +556,63 @@ fn generate_castling_moves(board: &[u64; 12], moves: &mut Vec<(u8, u8)>, white: 
         // White kingside castling (O-O)
         if board_state.white_kingside_castle {
             // Check if squares between king and rook are empty
-            let empty_squares = !get_bit(all_occupied, 61) && !get_bit(all_occupied, 62); // f1 and g1
+            let empty_squares = !get_bit(all_occupied, 61) && !get_bit(all_occupied, 62);
             
             // Check if king is not in check and doesn't pass through attacked squares
-            let safe_squares = !get_bit(enemy_attacks, 60) && // e1
-                             !get_bit(enemy_attacks, 61) && // f1
-                             !get_bit(enemy_attacks, 62);   // g1
+            let safe_squares = !get_bit(enemy_attacks, 60) &&
+                             !get_bit(enemy_attacks, 61) &&
+                             !get_bit(enemy_attacks, 62);
             
             if empty_squares && safe_squares {
-                moves.push((60, 62)); // e1 -> g1
+                moves.push((60, 62));
             }
         }
         
         // White queenside castling (O-O-O)
         if board_state.white_queenside_castle {
-            // Check if squares between king and rook are empty
-            let empty_squares = !get_bit(all_occupied, 59) && // d1
-                             !get_bit(all_occupied, 58) && // c1
-                             !get_bit(all_occupied, 57);   // b1
+            let empty_squares = !get_bit(all_occupied, 59) &&
+                             !get_bit(all_occupied, 58) &&
+                             !get_bit(all_occupied, 57);
             
-            // Check if king is not in check and doesn't pass through attacked squares
-            let safe_squares = !get_bit(enemy_attacks, 60) && // e1
-                             !get_bit(enemy_attacks, 59) && // d1
-                             !get_bit(enemy_attacks, 58);   // c1
+            let safe_squares = !get_bit(enemy_attacks, 60) &&
+                             !get_bit(enemy_attacks, 59) &&
+                             !get_bit(enemy_attacks, 58);
             
             if empty_squares && safe_squares {
-                moves.push((60, 58)); // e1 -> c1
+                moves.push((60, 58));
             }
         }
     } else {
         // Black kingside castling (O-O)
         if board_state.black_kingside_castle {
-            // Check if squares between king and rook are empty
-            let empty_squares = !get_bit(all_occupied, 5) && !get_bit(all_occupied, 6); // f8 and g8
+            let empty_squares = !get_bit(all_occupied, 5) && !get_bit(all_occupied, 6);
             
-            // Check if king is not in check and doesn't pass through attacked squares
-            let safe_squares = !get_bit(enemy_attacks, 4) && // e8
-                             !get_bit(enemy_attacks, 5) && // f8
-                             !get_bit(enemy_attacks, 6);   // g8
+            let safe_squares = !get_bit(enemy_attacks, 4) &&
+                             !get_bit(enemy_attacks, 5) &&
+                             !get_bit(enemy_attacks, 6);
             
             if empty_squares && safe_squares {
-                moves.push((4, 6)); // e8 -> g8
+                moves.push((4, 6));
             }
         }
         
         // Black queenside castling (O-O-O)
         if board_state.black_queenside_castle {
-            // Check if squares between king and rook are empty
-            let empty_squares = !get_bit(all_occupied, 3) && // d8
-                             !get_bit(all_occupied, 2) && // c8
-                             !get_bit(all_occupied, 1);   // b8
+            let empty_squares = !get_bit(all_occupied, 3) &&
+                             !get_bit(all_occupied, 2) &&
+                             !get_bit(all_occupied, 1);
             
-            // Check if king is not in check and doesn't pass through attacked squares
-            let safe_squares = !get_bit(enemy_attacks, 4) && // e8
-                             !get_bit(enemy_attacks, 3) && // d8
-                             !get_bit(enemy_attacks, 2);   // c8
+            let safe_squares = !get_bit(enemy_attacks, 4) &&
+                             !get_bit(enemy_attacks, 3) &&
+                             !get_bit(enemy_attacks, 2);
             
             if empty_squares && safe_squares {
-                moves.push((4, 2)); // e8 -> c8
+                moves.push((4, 2));
             }
         }
     }
 }
+
 
 
 fn generate_bishop_moves(board: &[u64; 12], moves: &mut Vec<(u8, u8)>, white: bool) {
@@ -712,12 +723,10 @@ fn get_pawn_attacks_bitboard(board: &[u64; 12], white_pawns: bool) -> u64 {
         let square = get_lsb(pawns_copy).unwrap();
         clear_bit(&mut pawns_copy, square);
         
-        unsafe {
-            if white_pawns {
-                attacks |= WHITE_PAWN_ATTACKS[square as usize];
-            } else {
-                attacks |= BLACK_PAWN_ATTACKS[square as usize];
-            }
+        if white_pawns {
+            attacks |= WHITE_PAWN_ATTACKS.get().unwrap()[square as usize];
+        } else {
+            attacks |= BLACK_PAWN_ATTACKS.get().unwrap()[square as usize];
         }
     }
     attacks
@@ -731,10 +740,7 @@ fn get_knight_attacks_bitboard(board: &[u64; 12], white_knights: bool) -> u64 {
     while knights_copy != 0 {
         let square = get_lsb(knights_copy).unwrap();
         clear_bit(&mut knights_copy, square);
-        
-        unsafe {
-            attacks |= KNIGHT_ATTACKS[square as usize];
-        }
+        attacks |= KNIGHT_ATTACKS.get().unwrap()[square as usize];
     }
     attacks
 }
@@ -790,9 +796,7 @@ fn get_king_attacks_bitboard(board: &[u64; 12], white_king: bool) -> u64 {
     
     if king != 0 {
         let square = get_lsb(king).unwrap();
-        unsafe {
-            attacks |= KING_ATTACKS[square as usize];
-        }
+        attacks |= KING_ATTACKS.get().unwrap()[square as usize];
     }
     attacks
 }
@@ -895,10 +899,12 @@ struct Move {
 }
 
 fn make_move(board: &mut BoardState, from: u8, to: u8) -> Option<Move> {
-    let previous_castling: (bool, bool, bool, bool) = (board.white_kingside_castle,
-    board.white_queenside_castle,
-    board.black_king_in_check,
-    board.black_queenside_castle);
+    let previous_castling: (bool, bool, bool, bool) = (
+        board.white_kingside_castle,
+        board.white_queenside_castle,
+        board.black_kingside_castle,
+        board.black_queenside_castle,
+    );
 
     let mut moving_piece: Option<usize> = None; 
     let start_range: usize = if board.white_to_move { 0 } else { 6 };
@@ -913,9 +919,10 @@ fn make_move(board: &mut BoardState, from: u8, to: u8) -> Option<Move> {
     
     let moving_piece: usize = match moving_piece {
         Some(p) => p,
-        None => return false,
+        None => return None,  // Changed from false to None
     };
     
+    // Handle castling moves
     if (moving_piece == WK || moving_piece == BK) && (from as i32 - to as i32).abs() == 2 {
         return make_castling_move(board, from, to, moving_piece == WK);
     }
@@ -941,14 +948,17 @@ fn make_move(board: &mut BoardState, from: u8, to: u8) -> Option<Move> {
     
     set_bit(&mut board.bitboards[moving_piece], to);
     
+    // Update castling rights
     if moving_piece == WK || moving_piece == BK {
         board.king_moved(moving_piece == WK);
     } else if moving_piece == WR || moving_piece == BR {
         board.rook_moved(from, moving_piece == WR);
     }
     
+    // Switch sides
     board.white_to_move = !board.white_to_move;
     
+    // Update check status
     board.update_check_status();
     
     Some(Move {
@@ -957,10 +967,10 @@ fn make_move(board: &mut BoardState, from: u8, to: u8) -> Option<Move> {
         piece: moving_piece,
         captured_piece,
         promotion: None,
-        castling_move : false,
+        castling_move: false,
         en_passant: false,
-        previous_castling_rights : previous_castling,
-        previous_en_passant_target : None,
+        previous_castling_rights: previous_castling,
+        previous_en_passant_target: None,
     })
 }
 
@@ -1009,7 +1019,14 @@ fn unmake_move(board: &mut BoardState, mv: &Move) {
     board.update_check_status();
 }
 
-fn make_castling_move(board: &mut BoardState, from: u8, to: u8, white: bool) -> bool {
+fn make_castling_move(board: &mut BoardState, from: u8, to: u8, white: bool) -> Option<Move> {
+    let previous_castling = (
+        board.white_kingside_castle,
+        board.white_queenside_castle,
+        board.black_kingside_castle,
+        board.black_queenside_castle,
+    );
+    
     let (king_from, king_to, rook_from, rook_to) = if white {
         if to == 62 { // Kingside
             (60, 62, 63, 61)
@@ -1042,7 +1059,17 @@ fn make_castling_move(board: &mut BoardState, from: u8, to: u8, white: bool) -> 
     
     board.update_check_status();
     
-    true
+    Some(Move {
+        from,
+        to,
+        piece: if white { WK } else { BK },
+        captured_piece: None,
+        promotion: None,
+        castling_move: true,
+        en_passant: false,
+        previous_castling_rights: previous_castling,
+        previous_en_passant_target: None,
+    })
 }
 
 //END OF MOVE EXECUTION-----------------------------------------------------------------------------------
@@ -1079,6 +1106,52 @@ impl SearchState {
 
 
 //EVALUATION----------------------------------------------------------------------------------------------
+
+fn evaluate_board_fast(board: &BoardState) -> i32 {
+    // Use incremental evaluation
+    let mut score = 0;
+    
+    // Material evaluation using bit counting
+    const PIECE_VALUES: [i32; 6] = [100, 300, 300, 500, 900, 0]; // P, N, B, R, Q, K
+    
+    for piece in 0..6 {
+        let white_count = count_bits(board.bitboards[piece]) as i32;
+        let black_count = count_bits(board.bitboards[piece + 6]) as i32;
+        score += PIECE_VALUES[piece] * (white_count - black_count);
+    }
+    
+    // Piece-square tables using precomputed values
+    static mut WHITE_PST: [i32; 64] = [0; 64];
+    static mut BLACK_PST: [i32; 64] = [0; 64];
+    
+    unsafe {
+        // Precompute these once
+        for square in 0..64 {
+            let table_index = 63 - square as usize;
+            WHITE_PST[square] = PAWN_TABLE[table_index] + KNIGHT_TABLE[table_index] 
+                + BISHOP_TABLE[table_index] + ROOK_TABLE[table_index]
+                + QUEEN_TABLE[table_index] + KING_TABLE[table_index];
+            BLACK_PST[square] = -(PAWN_TABLE[square] + KNIGHT_TABLE[square] 
+                + BISHOP_TABLE[square] + ROOK_TABLE[square]
+                + QUEEN_TABLE[square] + KING_TABLE[square]);
+        }
+    }
+    
+    // Fast piece-square evaluation
+    for square in 0..64 {
+        let bit = 1u64 << square;
+        for piece in 0..6 {
+            if (board.bitboards[piece] & bit) != 0 {
+                unsafe { score += WHITE_PST[square]; }
+            }
+            if (board.bitboards[piece + 6] & bit) != 0 {
+                unsafe { score += BLACK_PST[square]; }
+            }
+        }
+    }
+    
+    score
+}
 
 fn evaluate_board_advanced(board: &BoardState) -> i32 {
     let mut score = 0;
@@ -1167,6 +1240,97 @@ fn evaluate_board_advanced(board: &BoardState) -> i32 {
 
 //TESTS---------------------------------------------------------------------------------------------------
 
+fn test_performance() {
+    println!("\n=== Performance Testing ===");
+    
+    let board_state = BoardState::new();
+    
+    println!("Testing move generation speed...");
+    
+    // Test raw move generation speed
+    let start = std::time::Instant::now();
+    for _ in 0..1000 {
+        let _ = generate_moves(board_state.bitboards, true, &board_state);
+    }
+    let elapsed = start.elapsed();
+    println!("1000 move generations took: {:?}", elapsed);
+    println!("Average per generation: {:?}", elapsed / 1000);
+    
+    // Test legal move filtering speed
+    println!("\nTesting legal move filtering...");
+    let moves = generate_moves(board_state.bitboards, true, &board_state);
+    let start = std::time::Instant::now();
+    
+    let legal_moves: Vec<(u8, u8)> = moves.into_iter()
+        .filter(|&(from, to)| {
+            let mut temp_state = SearchState {
+                board: board_state,
+                move_history: Vec::new(),
+            };
+            
+            if temp_state.make_move(from, to) {
+                let our_king_in_check = temp_state.board.white_king_in_check;
+                !our_king_in_check
+            } else {
+                false
+            }
+        })
+        .collect();
+    
+    let elapsed = start.elapsed();
+    println!("Legal moves found: {}", legal_moves.len());
+    println!("Filtering took: {:?}", elapsed);
+    
+    // Test evaluation speed
+    println!("\nTesting evaluation speed...");
+    let start = std::time::Instant::now();
+    for _ in 0..10000 {
+        let _ = evaluate_board_advanced(&board_state);
+    }
+    let elapsed = start.elapsed();
+    println!("10000 evaluations took: {:?}", elapsed);
+    println!("Average per evaluation: {:?}", elapsed / 10000);
+}
+
+fn test_minimax() {
+    println!("\n=== Testing Minimax Algorithm ===");
+    
+    let board_state = BoardState::new();
+    
+    // Test with depth 1
+    println!("\nSearching for best move at depth 1...");
+    if let Some((from, to)) = find_best_move(&board_state, 1) {
+        println!("Best move found: {} -> {}", 
+            square_to_coordinates(from), 
+            square_to_coordinates(to));
+        
+        // Show the resulting position
+        let mut new_state = board_state;
+        make_move(&mut new_state, from, to);
+        print_board(&new_state);
+        println!("Evaluation after move: {}", evaluate_board_advanced(&new_state));
+    } else {
+        println!("No legal moves found!");
+    }
+    
+    // Test with depth 2 (more thorough search)
+    println!("\nSearching for best move at depth 2...");
+    if let Some((from, to)) = find_best_move(&board_state, 2) {
+        println!("Best move found: {} -> {}", 
+            square_to_coordinates(from), 
+            square_to_coordinates(to));
+    }
+    
+    // Test iterative deepening
+    println!("\nSearching with iterative deepening (max depth 6, 5 second limit)...");
+    if let Some((from, to)) = find_best_move_iterative_deepening_optimized(&board_state, 6, 5000) {
+        println!("Best move found: {} -> {}", 
+            square_to_coordinates(from), 
+            square_to_coordinates(to));
+    }
+}
+
+
 fn test_evaluation() {
     let board = BoardState::new();
     let score = evaluate_board_advanced(&board);
@@ -1242,7 +1406,7 @@ fn test_unmake_move() {
             board.white_queenside_castle = false;
         } else if moving_piece == BK {
             board.black_kingside_castle = false;
-            black_queenside_castle = false;
+            board.black_queenside_castle = false;
         }
         
         // Switch sides
@@ -1303,7 +1467,336 @@ fn test_unmake_move() {
     }
 }
 
+fn test_depth_x(depth: u8) {
+    println!("\n=== Testing Best Move Search at Depth 6 ===");
+    
+    let board_state = BoardState::new();
+    
+    // Test 1: Initial position
+    println!("\nTest 1: Initial Position (White to move)");
+    let start = std::time::Instant::now();
+    
+    if let Some((from, to)) = find_best_move(&board_state, depth) {
+        let elapsed = start.elapsed();
+        println!("Best move found: {} -> {}", 
+            square_to_coordinates(from), 
+            square_to_coordinates(to));
+        println!("Search time: {:?}", elapsed);
+        
+        // Show the move on the board
+        let mut new_state = board_state;
+        if let Some(mv) = make_move(&mut new_state, from, to) {
+            println!("\nPosition after move:");
+            print_board(&new_state);
+            println!("Evaluation after move: {}", evaluate_board_advanced(&new_state));
+            
+            // Check if move is a capture
+            if let Some(captured) = mv.captured_piece {
+                let piece_names = ["WP", "WN", "WB", "WR", "WQ", "WK", 
+                                   "BP", "BN", "BB", "BR", "BQ", "BK"];
+                println!("Captured: {}", piece_names[captured]);
+            }
+        }
+    } else {
+        println!("No legal moves found!");
+    }
+    
+    // Test 2: After 1.e4
+    println!("\nTest 2: After 1.e4 (Black to move)");
+    let mut after_e4 = BoardState::new();
+    if let Some(_) = make_move(&mut after_e4, 52, 36) { // e2-e4
+        let start = std::time::Instant::now();
+        
+        if let Some((from, to)) = find_best_move(&after_e4, 6) {
+            let elapsed = start.elapsed();
+            println!("Best move found: {} -> {}", 
+                square_to_coordinates(from), 
+                square_to_coordinates(to));
+            println!("Search time: {:?}", elapsed);
+            
+            let move_names = ["e2-e4", "Nf3", "Nc3", "Bc4", "Bb5", "d3", "f4", "g3"];
+            println!("Common opening moves at this position:");
+            println!("- e2-e4 (already played)");
+            println!("- Ng1-f3 (Knight to f3)");
+            println!("- Bf1-c4 (Bishop to c4)");
+            println!("- Bf1-b5 (Spanish/Ruy Lopez)");
+        }
+    }
+    
+    // Test 3: Specific tactical position (Scholar's mate position)
+    println!("\nTest 3: Tactical Position (White to move and mate in 2)");
+    let mut scholars_mate = BoardState::new();
+    // Clear pieces for scholar's mate setup
+    scholars_mate.bitboards = create_board();
+    // Remove some pieces to create the position
+    clear_bit(&mut scholars_mate.bitboards[WP], 52); // Remove e2 pawn
+    clear_bit(&mut scholars_mate.bitboards[BP], 12); // Remove e7 pawn
+    clear_bit(&mut scholars_mate.bitboards[BP], 11); // Remove d7 pawn
+    clear_bit(&mut scholars_mate.bitboards[BP], 10); // Remove c7 pawn
+    
+    // Place pieces for scholar's mate
+    set_bit(&mut scholars_mate.bitboards[WQ], 37); // Queen on d5
+    set_bit(&mut scholars_mate.bitboards[WB], 45); // Bishop on f3
+    
+    println!("Position: White Queen d5, Bishop f3, Black King e8, pawns on f7, g7, h7");
+    print_board(&scholars_mate);
+    
+    let start = std::time::Instant::now();
+    if let Some((from, to)) = find_best_move(&scholars_mate, 6) {
+        let elapsed = start.elapsed();
+        println!("Best move found: {} -> {}", 
+            square_to_coordinates(from), 
+            square_to_coordinates(to));
+        println!("Search time: {:?}", elapsed);
+        
+        // Check if it's Qxf7# (queen takes f7 mate)
+        if from == 37 && to == 13 { // d5 to f7
+            println!("✓ Found scholar's mate! Qxf7#");
+        } else {
+            println!("Expected Qxf7# (queen takes f7 mate)");
+        }
+    }
+    
+    // Test 4: Compare search algorithms
+    println!("\nTest 4: Algorithm Comparison at Depth 4");
+    let start_basic = std::time::Instant::now();
+    let basic_move = find_best_move(&board_state, 4);
+    let basic_time = start_basic.elapsed();
+    
+    let start_optimized = std::time::Instant::now();
+    let optimized_move = find_best_move_iterative_deepening_optimized(&board_state, 4, 10000);
+    let optimized_time = start_optimized.elapsed();
+    
+    println!("Basic minimax (depth 4): {:?} in {:?}", basic_move, basic_time);
+    println!("Optimized (depth 4): {:?} in {:?}", optimized_move, optimized_time);
+    
+    if basic_move == optimized_move {
+        println!("✓ Both algorithms agree on best move!");
+    } else {
+        println!("⚠ Algorithms disagree on best move");
+    }
+    
+    // Test 5: Performance metrics
+    println!("\nTest 5: Performance Metrics");
+    test_search_performance(6);
+}
+
+fn test_search_performance(max_depth: u8) {
+    let board_state = BoardState::new();
+    
+    for depth in 1..=max_depth {
+        println!("\nSearching at depth {}...", depth);
+        let start = std::time::Instant::now();
+        
+        if let Some((from, to)) = find_best_move(&board_state, depth) {
+            let elapsed = start.elapsed();
+            let nodes = estimate_nodes_searched(&board_state, depth);
+            let nps = (nodes as f64 / elapsed.as_secs_f64()) as u64;
+            
+            println!("  Best move: {} -> {}", 
+                square_to_coordinates(from), 
+                square_to_coordinates(to));
+            println!("  Time: {:?}", elapsed);
+            println!("  Estimated nodes: {}", nodes);
+            println!("  Estimated NPS: {}/sec", nps);
+            
+            if depth > 1 {
+                let prev_start = std::time::Instant::now();
+                let _ = find_best_move(&board_state, depth - 1);
+                let prev_elapsed = prev_start.elapsed();
+                
+                if prev_elapsed.as_micros() > 0 {
+                    let branching_factor = elapsed.as_micros() as f64 / prev_elapsed.as_micros() as f64;
+                    println!("  Branching factor: {:.2}", branching_factor);
+                }
+            }
+        }
+    }
+}
+
+// Simple node estimation (for demonstration)
+fn estimate_nodes_searched(board_state: &BoardState, depth: u8) -> u64 {
+    // Very rough estimation based on average branching factor
+    const AVERAGE_BRANCHING: f64 = 35.0; // Typical chess branching factor
+    
+    let mut total_nodes = 0.0;
+    for d in 0..depth {
+        total_nodes += AVERAGE_BRANCHING.powf(d as f64);
+    }
+    
+    total_nodes as u64
+}
+
+// Also add a function to test move generation at depth 6
+fn test_move_generation_depth_6() {
+    println!("\n=== Testing Move Generation Tree at Depth 6 ===");
+    
+    let board_state = BoardState::new();
+    
+    // Count moves at each depth
+    let mut total_positions = 0u64;
+    let mut depth_counts = vec![0u64; 7]; // Depth 0 to 6
+    
+    // Recursive function to count positions
+    fn count_positions(state: &BoardState, depth: u8, max_depth: u8, counts: &mut Vec<u64>) -> u64 {
+        if depth == max_depth {
+            return 1;
+        }
+        
+        let moves = generate_moves(state.bitboards, state.white_to_move, state);
+        let legal_moves: Vec<(u8, u8)> = moves.into_iter()
+            .filter(|&(from, to)| {
+                let mut temp_state = *state;
+                make_move(&mut temp_state, from, to).is_some()
+            })
+            .collect();
+        
+        let mut positions = 0;
+        for &(from, to) in &legal_moves {
+            let mut next_state = *state;
+            if make_move(&mut next_state, from, to).is_some() {
+                positions += count_positions(&next_state, depth + 1, max_depth, counts);
+            }
+        }
+        
+        counts[depth as usize] += positions;
+        positions
+    }
+    
+    let start = std::time::Instant::now();
+    total_positions = count_positions(&board_state, 0, 6, &mut depth_counts);
+    let elapsed = start.elapsed();
+    
+    println!("Total positions at depth 6: {}", total_positions);
+    println!("Time to count: {:?}", elapsed);
+    
+    // Print counts per depth
+    for depth in 0..=6 {
+        println!("  Depth {}: {} positions", depth, depth_counts[depth]);
+    }
+    
+    // Compare with known chess statistics
+    println!("\nChess statistics comparison:");
+    println!("- Initial position has ~20 legal moves");
+    println!("- Positions at depth 6: ~9,000,000 (typical)");
+    println!("- Your engine found: {}", total_positions);
+}
+
+fn play_game() {
+    println!("\n=== Chess Engine - Simple Game ===");
+    
+    let mut board_state = BoardState::new();
+    let mut game_over = false;
+    
+    while !game_over {
+        print_board(&board_state);
+        
+        if board_state.white_to_move {
+            println!("White to move.");
+            
+            // Let the engine play for white
+            if let Some((from, to)) = find_best_move(&board_state, 2) {
+                println!("Engine plays: {} -> {}", 
+                    square_to_coordinates(from), 
+                    square_to_coordinates(to));
+                
+                make_move(&mut board_state, from, to);
+            } else {
+                println!("No legal moves for white!");
+                game_over = true;
+            }
+        } else {
+            println!("Black to move.");
+            
+            // Let the engine play for black
+            if let Some((from, to)) = find_best_move(&board_state, 2) {
+                println!("Engine plays: {} -> {}", 
+                    square_to_coordinates(from), 
+                    square_to_coordinates(to));
+                
+                make_move(&mut board_state, from, to);
+            } else {
+                println!("No legal moves for black!");
+                game_over = true;
+            }
+        }
+        
+        // Check for checkmate
+        if board_state.white_king_in_check && board_state.white_to_move {
+            println!("White is in check!");
+        }
+        if board_state.black_king_in_check && !board_state.white_to_move {
+            println!("Black is in check!");
+        }
+        
+        // Simple game end condition - just play 10 moves each
+        // In a real game, you'd check for checkmate/stalemate
+        static mut MOVE_COUNT: u32 = 0;
+        unsafe {
+            MOVE_COUNT += 1;
+            if MOVE_COUNT >= 20 {
+                println!("Game over after 20 moves.");
+                game_over = true;
+            }
+        }
+    }
+    
+    println!("\nFinal position:");
+    print_board(&board_state);
+    println!("Final evaluation: {}", evaluate_board_advanced(&board_state));
+}
+
+fn benchmark_search() {
+    println!("\n=== Search Benchmark ===");
+    
+    let positions = [
+        ("Initial Position", BoardState::new()),
+        ("Italian Game", create_italian_position()),
+        ("Sicilian Defense", create_sicilian_position()),
+    ];
+    
+    for (name, position) in positions.iter() {
+        println!("\n{}:", name);
+        
+        for depth in [3, 4, 5] {
+            let start = std::time::Instant::now();
+            if let Some((from, to)) = find_best_move(&position, depth) {
+                let elapsed = start.elapsed();
+                println!("  Depth {}: {} -> {} in {:?}", 
+                    depth,
+                    square_to_coordinates(from),
+                    square_to_coordinates(to),
+                    elapsed);
+            }
+        }
+    }
+}
+
+fn create_italian_position() -> BoardState {
+    let mut board = BoardState::new();
+    
+    // Make moves to reach Italian Game: 1.e4 e5 2.Nf3 Nc6 3.Bc4
+    let _ = make_move(&mut board, 52, 36); // e2-e4
+    let _ = make_move(&mut board, 12, 28); // e7-e5
+    let _ = make_move(&mut board, 57, 42); // Ng1-f3
+    let _ = make_move(&mut board, 1, 16); // Nb8-c6
+    let _ = make_move(&mut board, 58, 44); // Bf1-c4
+    
+    board
+}
+
+fn create_sicilian_position() -> BoardState {
+    let mut board = BoardState::new();
+    
+    // Make moves to reach Sicilian Defense: 1.e4 c5
+    let _ = make_move(&mut board, 52, 36); // e2-e4
+    let _ = make_move(&mut board, 10, 26); // c7-c5
+    
+    board
+}
+
 //END OF TESTS--------------------------------------------------------------------------------------------
+
 
 //ZOBRIST HASH--------------------------------------------------------------------------------------------
 
@@ -1396,6 +1889,1090 @@ fn compute_board_hash(board: &BoardState) -> u64 {
 
 //END OF ZOBRIST HASH-------------------------------------------------------------------------------------
 
+
+//MINIMAX SEARCH------------------------------------------------------------------------------------------
+static DEBUG: bool = false;
+
+
+fn find_best_move(board_state: &BoardState, depth: u8) -> Option<(u8, u8)> {
+    if DEBUG {
+        println!("\n=== Starting search at depth {} ===", depth);
+        println!("Position evaluation: {}", evaluate_board_advanced(board_state));
+    }
+    
+    let mut search_state = SearchState {
+        board: *board_state,
+        move_history: Vec::new(),
+    };
+    
+    let mut best_move = None;
+    let mut best_value = if board_state.white_to_move { i32::MIN } else { i32::MAX };
+    
+    // Generate all legal moves
+    let moves = generate_moves(search_state.board.bitboards, search_state.board.white_to_move, &search_state.board);
+    
+    if DEBUG {
+        println!("[Root] Raw moves generated: {}", moves.len());
+    }
+    
+    // Filter for legal moves (those that don't leave king in check)
+    let legal_moves: Vec<(u8, u8)> = moves.into_iter()
+        .filter(|&(from, to)| {
+            let mut temp_state = SearchState {
+                board: search_state.board,
+                move_history: Vec::new(),
+            };
+            
+            // Try to make the move
+            if temp_state.make_move(from, to) {
+                // Check if the move leaves our own king in check
+                let our_king_in_check = if search_state.board.white_to_move {
+                    temp_state.board.white_king_in_check
+                } else {
+                    temp_state.board.black_king_in_check
+                };
+                
+                // The move is legal if it doesn't leave our king in check
+                !our_king_in_check
+            } else {
+                false
+            }
+        })
+        .collect();
+    
+    if DEBUG {
+        println!("[Root] Legal moves: {}", legal_moves.len());
+        println!("[Root] Moves list:");
+        for &(from, to) in &legal_moves {
+            println!("  {} -> {}", square_to_coordinates(from), square_to_coordinates(to));
+        }
+    }
+    
+    if legal_moves.is_empty() {
+        if DEBUG {
+            println!("[Root] No legal moves found!");
+        }
+        return None;
+    }
+    
+    // Order moves at root
+    let ordered_moves = order_moves(&search_state.board, &legal_moves);
+    
+    if DEBUG {
+        println!("[Root] Ordered moves (top 10):");
+        for (i, (score, from, to)) in ordered_moves.iter().take(10).enumerate() {
+            println!("  {}. {} -> {} (score: {})", 
+                i + 1, square_to_coordinates(*from), square_to_coordinates(*to), score);
+        }
+    }
+    
+    let mut move_counter = 0;
+    for (_, from, to) in &ordered_moves {
+        move_counter += 1;
+        
+        if DEBUG {
+            println!("\n[Root] Evaluating move {} of {}: {} -> {}", 
+                move_counter, ordered_moves.len(), 
+                square_to_coordinates(*from), square_to_coordinates(*to));
+        }
+        
+        // Make the move
+        search_state.make_move(*from, *to);
+        
+        // Evaluate the position
+        let value = minimax(&mut search_state, depth as i32 - 1, i32::MIN, i32::MAX, !board_state.white_to_move);
+        
+        // Unmake the move
+        search_state.unmake_move();
+        
+        if DEBUG {
+            println!("[Root] Move {} -> {} evaluation: {}", 
+                square_to_coordinates(*from), square_to_coordinates(*to), value);
+        }
+        
+        if board_state.white_to_move {
+            // White wants to maximize the score
+            if value > best_value || best_move.is_none() {
+                if DEBUG && best_move.is_some() {
+                    println!("[Root] New best move! Old: {}, New: {}", best_value, value);
+                }
+                best_value = value;
+                best_move = Some((*from, *to));
+            }
+        } else {
+            // Black wants to minimize the score
+            if value < best_value || best_move.is_none() {
+                if DEBUG && best_move.is_some() {
+                    println!("[Root] New best move! Old: {}, New: {}", best_value, value);
+                }
+                best_value = value;
+                best_move = Some((*from, *to));
+            }
+        }
+    }
+    
+    if DEBUG {
+        if let Some((from, to)) = best_move {
+            println!("\n[Root] Best move found: {} -> {} with evaluation: {}", 
+                square_to_coordinates(from), square_to_coordinates(to), best_value);
+        }
+        println!("=== End search at depth {} ===\n", depth);
+    }
+    
+    best_move
+}
+
+fn find_best_move_iterative_deepening_optimized(
+    board_state: &BoardState, 
+    max_depth: u8, 
+    _time_limit_ms: u64  // Prefix with underscore since it's unused
+) -> Option<(u8, u8)> {
+    let mut tt = TranspositionTable::new(16);
+    let mut best_move = None;
+    let mut alpha = i32::MIN + 1;
+    let mut beta = i32::MAX - 1;
+    
+    for depth in 1..=max_depth {
+        let window = 50;
+        
+        // Fix: Add the missing ply parameter (0 for root)
+        let score = negamax_root(
+            board_state,
+            depth as i32,
+            alpha,
+            beta,
+            0,  // ply parameter for root
+            &mut tt,
+        );
+        
+        if score <= alpha {
+            alpha = i32::MIN + 1;
+            beta = score + window;
+        } else if score >= beta {
+            alpha = score - window;
+            beta = i32::MAX - 1;
+        } else {
+            alpha = score - window;
+            beta = score + window;
+            best_move = get_best_move_from_tt(board_state, &tt);
+        }
+    }
+    
+    best_move
+}
+
+/// Minimax algorithm with alpha-beta pruning
+fn minimax(
+    search_state: &mut SearchState,
+    depth: i32,
+    mut alpha: i32,
+    mut beta: i32,
+    maximizing_player: bool,
+) -> i32 {
+    // Base case: reached maximum depth or terminal position
+    if depth == 0 {
+        if DEBUG && depth == 0 {
+            println!("  [Leaf node reached, evaluating position]");
+        }
+        return evaluate_board_advanced(&search_state.board);
+    }
+    
+    // Generate legal moves for the current position
+    let moves = generate_moves(
+        search_state.board.bitboards,
+        search_state.board.white_to_move,
+        &search_state.board,
+    );
+    
+    if DEBUG {
+        println!("  [Depth {}] Raw moves generated: {}", depth, moves.len());
+    }
+    
+    // Filter for legal moves (those that don't leave king in check)
+    let legal_moves: Vec<(u8, u8)> = moves.into_iter()
+        .filter(|&(from, to)| {
+            let mut temp_state = SearchState {
+                board: search_state.board,
+                move_history: Vec::new(),
+            };
+            
+            if temp_state.make_move(from, to) {
+                let our_king_in_check = if search_state.board.white_to_move {
+                    temp_state.board.white_king_in_check
+                } else {
+                    temp_state.board.black_king_in_check
+                };
+                !our_king_in_check
+            } else {
+                false
+            }
+        })
+        .collect();
+    
+    if DEBUG {
+        println!("  [Depth {}] Legal moves after check: {}", depth, legal_moves.len());
+        
+        // Print first few moves for debugging
+        if depth >= 3 && legal_moves.len() > 0 {
+            println!("    First 5 moves:");
+            for &(from, to) in legal_moves.iter().take(5) {
+                println!("      {} -> {}", square_to_coordinates(from), square_to_coordinates(to));
+            }
+            if legal_moves.len() > 5 {
+                println!("      ... and {} more", legal_moves.len() - 5);
+            }
+        }
+    }
+    
+    let mut moves_with_scores: Vec<(i32, u8, u8)> = order_moves(&search_state.board, &legal_moves);
+    
+    if DEBUG && depth >= 3 && moves_with_scores.len() > 0 {
+        println!("    After ordering - top 5 moves:");
+        for (score, from, to) in moves_with_scores.iter().take(5) {
+            println!("      {} -> {} (score: {})", 
+                square_to_coordinates(*from), 
+                square_to_coordinates(*to), 
+                score);
+        }
+    }
+    
+    // Check for terminal positions
+    if legal_moves.is_empty() {
+        // No legal moves - checkmate or stalemate
+        let in_check = if search_state.board.white_to_move {
+            search_state.board.white_king_in_check
+        } else {
+            search_state.board.black_king_in_check
+        };
+        
+        if in_check {
+            // Checkmate - return very bad score for the player who is checkmated
+            return if search_state.board.white_to_move {
+                // White is checkmated - very bad for white
+                i32::MIN + 1
+            } else {
+                // Black is checkmated - very good for white
+                i32::MAX - 1
+            };
+        } else {
+            // Stalemate - draw
+            return 0;
+        }
+    }
+    
+    if maximizing_player {
+        // Maximizing player (white in this context)
+        let mut max_eval = i32::MIN;
+        let mut moves_examined = 0;
+        let mut pruned_moves = 0;
+        
+        for (_, from, to) in &moves_with_scores {
+            moves_examined += 1;
+            
+            // Make the move
+            search_state.make_move(*from, *to);
+            
+            if DEBUG && depth >= 3 {
+                println!("    [Depth {}] Examining move {}: {} -> {}", 
+                    depth, moves_examined, square_to_coordinates(*from), square_to_coordinates(*to));
+            }
+            
+            // Recursively evaluate
+            let eval = minimax(search_state, depth - 1, alpha, beta, false);
+            
+            // Unmake the move
+            search_state.unmake_move();
+            
+            // Update max evaluation
+            max_eval = max_eval.max(eval);
+            
+            if DEBUG && depth >= 3 {
+                println!("    [Depth {}] Move {} -> {} evaluation: {} (alpha: {}, beta: {})", 
+                    depth, square_to_coordinates(*from), square_to_coordinates(*to), eval, alpha, beta);
+            }
+            
+            // Alpha-beta pruning
+            alpha = alpha.max(eval);
+            if beta <= alpha {
+                if DEBUG && depth >= 3 {
+                    println!("    [Depth {}] BETA CUTOFF after move {} -> {} (beta: {}, alpha: {})", 
+                        depth, square_to_coordinates(*from), square_to_coordinates(*to), beta, alpha);
+                }
+                pruned_moves = moves_with_scores.len() - moves_examined;
+                break; // Beta cutoff
+            }
+        }
+        
+        if DEBUG && depth >= 3 {
+            println!("  [Depth {}] Examined {} moves, pruned {} moves, max_eval: {}", 
+                depth, moves_examined, pruned_moves, max_eval);
+        }
+        
+        max_eval
+    } else {
+        // Minimizing player (black in this context)
+        let mut min_eval = i32::MAX;
+        let mut moves_examined = 0;
+        let mut pruned_moves = 0;
+        
+        for (_, from, to) in &moves_with_scores {
+            moves_examined += 1;
+            
+            // Make the move
+            search_state.make_move(*from, *to);
+            
+            if DEBUG && depth >= 3 {
+                println!("    [Depth {}] Examining move {}: {} -> {}", 
+                    depth, moves_examined, square_to_coordinates(*from), square_to_coordinates(*to));
+            }
+            
+            // Recursively evaluate
+            let eval = minimax(search_state, depth - 1, alpha, beta, true);
+            
+            // Unmake the move
+            search_state.unmake_move();
+            
+            // Update min evaluation
+            min_eval = min_eval.min(eval);
+            
+            if DEBUG && depth >= 3 {
+                println!("    [Depth {}] Move {} -> {} evaluation: {} (alpha: {}, beta: {})", 
+                    depth, square_to_coordinates(*from), square_to_coordinates(*to), eval, alpha, beta);
+            }
+            
+            // Alpha-beta pruning
+            beta = beta.min(eval);
+            if beta <= alpha {
+                if DEBUG && depth >= 3 {
+                    println!("    [Depth {}] ALPHA CUTOFF after move {} -> {} (beta: {}, alpha: {})", 
+                        depth, square_to_coordinates(*from), square_to_coordinates(*to), beta, alpha);
+                }
+                pruned_moves = moves_with_scores.len() - moves_examined;
+                break; // Alpha cutoff
+            }
+        }
+        
+        if DEBUG && depth >= 3 {
+            println!("  [Depth {}] Examined {} moves, pruned {} moves, min_eval: {}", 
+                depth, moves_examined, pruned_moves, min_eval);
+        }
+        
+        min_eval
+    }
+}
+
+
+
+/// Quiescence search - extends search in capture positions to avoid horizon effect
+fn quiescence_search(
+    search_state: &mut SearchState,
+    mut alpha: i32,
+    beta: i32,
+    maximizing_player: bool,
+) -> i32 {
+    // First, get a stand-pat evaluation
+    let stand_pat = evaluate_board_advanced(&search_state.board);
+    
+    if maximizing_player {
+        if stand_pat >= beta {
+            return beta;
+        }
+        if alpha < stand_pat {
+            alpha = stand_pat;
+        }
+    } else {
+        if stand_pat <= alpha {
+            return alpha;
+        }
+        if beta > stand_pat {
+            alpha = stand_pat;
+        }
+    }
+    
+    // Generate only capture moves
+    let capture_moves = generate_capture_moves(search_state);
+    
+    for &(from, to) in &capture_moves {
+        // Make the move
+        search_state.make_move(from, to);
+        
+        // Recursively evaluate captures
+        let score = -quiescence_search(search_state, -beta, -alpha, !maximizing_player);
+        
+        // Unmake the move
+        search_state.unmake_move();
+        
+        if maximizing_player {
+            if score >= beta {
+                return beta;
+            }
+            if score > alpha {
+                alpha = score;
+            }
+        } else {
+            if score <= alpha {
+                return alpha;
+            }
+            if score < beta {
+                alpha = score;
+            }
+        }
+    }
+    
+    alpha
+}
+
+/// Helper function to generate only capture moves
+fn generate_capture_moves(search_state: &SearchState) -> Vec<(u8, u8)> {
+    let mut capture_moves = Vec::new();
+    
+    // Get all moves
+    let all_moves = generate_moves(
+        search_state.board.bitboards,
+        search_state.board.white_to_move,
+        &search_state.board,
+    );
+    
+    // Filter for captures
+    for &(from, to) in &all_moves {
+        // Check if this move captures a piece
+        let enemy_start = if search_state.board.white_to_move { 6 } else { 0 };
+        let enemy_end = if search_state.board.white_to_move { 12 } else { 6 };
+        
+        let mut is_capture = false;
+        for piece_type in enemy_start..enemy_end {
+            if get_bit(search_state.board.bitboards[piece_type], to) {
+                is_capture = true;
+                break;
+            }
+        }
+        
+        if is_capture {
+            // Also check that the move is legal (doesn't leave king in check)
+            let mut temp_state = SearchState {
+                board: search_state.board,
+                move_history: Vec::new(),
+            };
+            
+            if temp_state.make_move(from, to) {
+                let our_king_in_check = if search_state.board.white_to_move {
+                    temp_state.board.white_king_in_check
+                } else {
+                    temp_state.board.black_king_in_check
+                };
+                
+                if !our_king_in_check {
+                    capture_moves.push((from, to));
+                }
+            }
+        }
+    }
+    
+    capture_moves
+}
+
+
+fn minimax_with_quiescence(
+    search_state: &mut SearchState,
+    depth: i32,
+    alpha: i32,
+    beta: i32,
+    maximizing_player: bool,
+) -> i32 {
+    if depth == 0 {
+        // Use quiescence search instead of static evaluation
+        return quiescence_search(search_state, alpha, beta, search_state.board.white_to_move);
+    }
+    
+    // ... rest of the minimax function remains the same as above ...
+    // You can copy the rest of the minimax function here and modify the base case
+    
+    // For now, let's just call the regular minimax
+    minimax(search_state, depth, alpha, beta, maximizing_player)
+}
+
+fn quiescence_search_enhanced(
+    search_state: &mut SearchState,
+    mut alpha: i32,
+    beta: i32,
+    maximizing_player: bool,
+) -> i32 {
+    let stand_pat = evaluate_board_fast(&search_state.board);
+    
+    if maximizing_player {
+        if stand_pat >= beta {
+            return beta;
+        }
+        if alpha < stand_pat {
+            alpha = stand_pat;
+        }
+    } else {
+        if stand_pat <= alpha {
+            return alpha;
+        }
+        if beta > stand_pat {
+            alpha = stand_pat;
+        }
+    }
+    
+    // Generate only capture moves (and checks)
+    let all_moves = generate_moves(
+        search_state.board.bitboards,
+        search_state.board.white_to_move,
+        &search_state.board,
+    );
+    
+    // Filter for captures and checks
+    let capture_moves: Vec<(u8, u8)> = all_moves.into_iter()
+        .filter(|&(from, to)| {
+            // Is it a capture?
+            let enemy_start = if search_state.board.white_to_move { 6 } else { 0 };
+            let enemy_end = if search_state.board.white_to_move { 12 } else { 6 };
+            
+            let mut is_capture = false;
+            for piece_type in enemy_start..enemy_end {
+                if get_bit(search_state.board.bitboards[piece_type], to) {
+                    is_capture = true;
+                    break;
+                }
+            }
+            
+            // Also include moves that give check
+            if !is_capture {
+                // Check if move gives check
+                let mut temp_state = search_state.board;
+                if make_move(&mut temp_state, from, to).is_some() {
+                    let opponent_in_check = if temp_state.white_to_move {
+                        temp_state.black_king_in_check
+                    } else {
+                        temp_state.white_king_in_check
+                    };
+                    return opponent_in_check;
+                }
+                return false;
+            }
+            
+            is_capture
+        })
+        .filter(|&(from, to)| is_move_legal_fast(&search_state.board, from, to))
+        .collect();
+    
+    // Order captures by MVV-LVA
+    let mut scored_captures: Vec<(i32, u8, u8)> = capture_moves.iter()
+        .map(|&(from, to)| {
+            let mut score = 0;
+            if let Some(captured_piece) = get_piece_at_square(&search_state.board.bitboards, to) {
+                let victim_value = get_piece_value(captured_piece);
+                let aggressor_value = if let Some(aggressor) = get_piece_at_square(&search_state.board.bitboards, from) {
+                    get_piece_value(aggressor)
+                } else { 0 };
+                score = 10000 + victim_value * 10 - aggressor_value;
+            }
+            (score, from, to)
+        })
+        .collect();
+    
+    scored_captures.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    
+    for &(_, from, to) in &scored_captures {
+        search_state.make_move(from, to);
+    let score = -quiescence_search_enhanced(search_state, -beta, -alpha, !maximizing_player);
+    search_state.unmake_move();
+        
+        if maximizing_player {
+            if score >= beta {
+                return beta;
+            }
+            if score > alpha {
+                alpha = score;
+            }
+        } else {
+            if score <= alpha {
+                return alpha;
+            }
+            if score < beta {
+                alpha = score;
+            }
+        }
+    }
+    
+    alpha
+}
+
+fn negamax_enhanced(
+    search_state: &mut SearchState,
+    depth: i32,
+    mut alpha: i32,
+    beta: i32,
+    ply: usize,
+    tt: &mut TranspositionTable,
+) -> i32  {
+    if depth == 0 {
+        return quiescence_search_enhanced(search_state, alpha, beta, search_state.board.white_to_move);
+    }
+    
+    let original_alpha = alpha;
+    let hash = compute_board_hash(&search_state.board);
+    
+    // TT lookup with improved probing
+    if let Some((score, best_move)) = tt.probe(hash, depth, alpha, beta) {
+        // Store as killer move if it caused a cutoff
+        if (score >= beta) && (best_move.0 != best_move.1) { // Not a null move
+            add_killer_move(ply, best_move.0, best_move.1);
+        }
+        return score;
+    }
+    
+    // Null move pruning (optional but effective)
+    if depth >= 3 && !search_state.board.is_current_king_in_check() {
+    // Try a null move
+    search_state.board.white_to_move = !search_state.board.white_to_move;
+    // Fix: Add ply parameter
+    let null_score = -negamax_root(
+        &search_state.board,
+        depth - 1 - 2,
+        -beta,
+        -beta + 1,
+        ply + 1,  // Add ply parameter
+        tt,
+    );
+    search_state.board.white_to_move = !search_state.board.white_to_move;
+    
+    if null_score >= beta {
+        return beta;
+    }
+}
+
+    
+    let moves = generate_moves(
+        search_state.board.bitboards,
+        search_state.board.white_to_move,
+        &search_state.board,
+    );
+    
+    // Filter for legal moves
+    let legal_moves: Vec<(u8, u8)> = moves.into_iter()
+        .filter(|&(from, to)| is_move_legal_fast(&search_state.board, from, to))
+        .collect();
+    
+    if legal_moves.is_empty() {
+        // Terminal position
+        let in_check = search_state.board.is_current_king_in_check();
+        return if in_check {
+            // Checkmate
+            i32::MIN + ply as i32 // Prefer checkmates earlier
+        } else {
+            0 // Stalemate
+        };
+    }
+    
+    let ordered_moves = order_moves(&search_state.board, &legal_moves);
+    
+    let mut best_score = i32::MIN + 1;
+    let mut best_move_found = (0, 0);
+    let mut moves_searched = 0;
+    
+    for &(_, from, to) in &ordered_moves {
+        search_state.make_move(from, to);
+        let mut score;
+    
+    // Late Move Reduction (LMR)
+    if moves_searched >= 4 && depth >= 3 && 
+       !search_state.board.is_current_king_in_check() &&
+       get_piece_at_square(&search_state.board.bitboards, to).is_none() {
+        
+        score = -negamax_enhanced(search_state, depth - 2, -alpha - 1, -alpha, ply + 1, tt);
+        if score > alpha {
+            // Research with full depth
+            score = -negamax_enhanced(search_state, depth - 1, -beta, -alpha, ply + 1, tt);
+        }
+    } else if moves_searched == 0 {
+        // Full window search for first move
+        score = -negamax_enhanced(search_state, depth - 1, -beta, -alpha, ply + 1, tt);
+    } else {
+        // Null window search for other moves
+        score = -negamax_enhanced(search_state, depth - 1, -alpha - 1, -alpha, ply + 1, tt);
+        if score > alpha && score < beta {
+            // Research with full window
+            score = -negamax_enhanced(search_state, depth - 1, -beta, -alpha, ply + 1, tt);
+        }
+    }
+        
+        search_state.unmake_move();
+        
+        if score >= beta {
+            // Beta cutoff - store as killer move
+            if get_piece_at_square(&search_state.board.bitboards, to).is_none() { // Not a capture
+                add_killer_move(ply, from, to);
+                update_history_score(from, to, depth);
+            }
+            
+            // Store in TT
+            tt.store(hash, depth, beta, 2, (from, to)); // Lower bound
+            return beta;
+        }
+        
+        if score > best_score {
+            best_score = score;
+            best_move_found = (from, to);
+            if score > alpha {
+                alpha = score;
+            }
+        }
+        
+        moves_searched += 1;
+    }
+    
+    // Determine TT flag
+    let flag = if best_score <= original_alpha {
+        1 // Upper bound
+    } else if best_score >= beta {
+        2 // Lower bound
+    } else {
+        0 // Exact
+    };
+    
+    tt.store(hash, depth, best_score, flag, best_move_found);
+    best_score
+}
+
+fn negamax_root(
+    board_state: &BoardState,
+    depth: i32,
+    alpha: i32,
+    beta: i32,
+    ply: usize,  // Add this missing parameter
+    tt: &mut TranspositionTable,
+) -> i32 {
+    let mut search_state = SearchState {
+        board: *board_state,
+        move_history: Vec::new(),
+    };
+    // Fix: Add the missing ply parameter (0 for root)
+    negamax_enhanced(&mut search_state, depth, alpha, beta, ply, tt)
+}
+
+
+fn is_move_legal_fast(board: &BoardState, from: u8, to: u8) -> bool {
+    let mut board_copy = *board;
+    if make_move(&mut board_copy, from, to).is_none() {
+        return false;
+    }
+    
+    // Fix: Use the dot operator instead of dereferencing
+    let king_square = if board.white_to_move {  // Fixed here
+        get_lsb(board_copy.bitboards[WK])
+    } else {
+        get_lsb(board_copy.bitboards[BK])
+    };
+    
+    if let Some(king_sq) = king_square {
+        let attacks = complete_attacks_bitboard(&board_copy.bitboards, !board.white_to_move);
+        return !get_bit(attacks, king_sq);
+    }
+    
+    false
+}
+
+
+//END OF MINMAX SEARCH------------------------------------------------------------------------------------
+
+
+//MOVE ORDERING-------------------------------------------------------------------------------------------
+
+fn order_moves(board: &BoardState, moves: &[(u8, u8)]) -> Vec<(i32, u8, u8)> {
+    let mut scored_moves = Vec::with_capacity(moves.len());
+    
+    // Try to get TT move first
+    let hash = compute_board_hash(board);
+    let tt_move = get_tt_move(hash);
+    
+    for &(from, to) in moves {
+        let mut score = 0;
+        
+        // TT move gets highest priority
+        if Some((from, to)) == tt_move {
+            score = 1_000_000;
+        }
+        // Captures: MVV-LVA
+        else if let Some(captured_piece) = get_piece_at_square(&board.bitboards, to) {
+            let victim_value = get_piece_value(captured_piece);
+            let aggressor_value = if let Some(aggressor) = get_piece_at_square(&board.bitboards, from) {
+                get_piece_value(aggressor)
+            } else { 0 };
+            
+            // MVV-LVA: victim*100 - aggressor
+            score = 100_000 + victim_value * 100 - aggressor_value;
+            
+            // Add bonus for capturing with less valuable pieces
+            if aggressor_value < victim_value {
+                score += 500; // Good trade
+            }
+        }
+        // Promotions
+        else if let Some(piece) = get_piece_at_square(&board.bitboards, from) {
+            if (piece == WP && to < 8) || (piece == BP && to >= 56) {
+                score = 90_000; // Promotion
+            }
+        }
+        // Killer moves
+        else if is_killer_move(from, to, board.white_to_move) {
+            score = 80_000;
+        }
+        // History heuristic
+        else {
+            score = get_history_score(from, to, board.white_to_move);
+        }
+        
+        // Add some positional bonuses
+        // Center control for knights
+        if let Some(piece) = get_piece_at_square(&board.bitboards, from) {
+            if piece == WN || piece == BN {
+                let center_squares = [27, 28, 35, 36]; // d4, e4, d5, e5
+                if center_squares.contains(&(to as usize)) {
+                    score += 50;
+                }
+            }
+        }
+        
+        scored_moves.push((score, from, to));
+    }
+    
+    // Sort descending (best moves first)
+    scored_moves.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    scored_moves
+}
+
+use std::cell::RefCell;
+use std::thread_local;
+
+// Killer moves are typically thread-local for performance
+thread_local! {
+    static KILLER_MOVES: RefCell<[[Option<(u8, u8)>; 2]; 64]> = RefCell::new([[None; 2]; 64]);
+}
+
+fn is_killer_move(from: u8, to: u8, _white_to_move: bool) -> bool {
+    KILLER_MOVES.with(|km| {
+        let km_ref = km.borrow();
+        for ply in 0..64 {
+            for slot in 0..2 {
+                if let Some((kfrom, kto)) = km_ref[ply][slot] {
+                    if kfrom == from && kto == to {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    })
+}
+
+fn add_killer_move(ply: usize, from: u8, to: u8) {
+    if ply >= 64 {
+        return;
+    }
+    
+    KILLER_MOVES.with(|km| {
+        let mut km_mut = km.borrow_mut();
+        
+        // Check if move already exists
+        for slot in 0..2 {
+            if let Some((kfrom, kto)) = km_mut[ply][slot] {
+                if kfrom == from && kto == to {
+                    return;
+                }
+            }
+        }
+        
+        // Shift and add
+        km_mut[ply][1] = km_mut[ply][0];
+        km_mut[ply][0] = Some((from, to));
+    });
+}
+
+static HISTORY_TABLE: OnceLock<ThreadSafeHistoryTable> = OnceLock::new();
+
+fn init_history_table() {
+    let _ = HISTORY_TABLE.set(ThreadSafeHistoryTable::new());
+}
+
+fn get_history_score(from: u8, to: u8, _white_to_move: bool) -> i32 {
+    HISTORY_TABLE.get().unwrap().get(from, to)
+}
+
+fn update_history_score(from: u8, to: u8, depth: i32) {
+    HISTORY_TABLE.get().unwrap().update(from, to, depth);
+}
+
+//END OF MOVE ORDERING------------------------------------------------------------------------------------
+
+
+//TRANSPOSITION TABLES------------------------------------------------------------------------------------
+
+static TRANSPOSITION_TABLE: OnceLock<Arc<RwLock<TranspositionTable>>> = OnceLock::new();
+
+#[derive(Clone, Copy)]
+struct TTEntry {
+    hash: u64,
+    depth: i32,
+    score: i32,
+    flag: u8, // 0=exact, 1=upper bound, 2=lower bound
+    best_move: (u8, u8),
+}
+
+struct TranspositionTable {
+    entries: Vec<Option<TTEntry>>,
+    size: usize,
+}
+
+impl TranspositionTable {
+    fn new(size_mb: usize) -> Self {
+        // Calculate number of entries based on memory size
+        // Each entry is about 24 bytes (u64 + i32 + i32 + u8 + (u8, u8) padding)
+        let entry_size = std::mem::size_of::<TTEntry>();
+        let size = (size_mb * 1024 * 1024) / entry_size;
+        
+        // Make sure we have at least some minimum size
+        let size = size.max(1024); // Minimum 1024 entries
+        
+        Self {
+            entries: vec![None; size],
+            size,
+        }
+    }
+    
+    fn store(&mut self, hash: u64, depth: i32, score: i32, flag: u8, best_move: (u8, u8)) {
+        let index = (hash as usize) % self.size;
+        
+        // Replacement strategy: always replace if new entry is from deeper search
+        if let Some(existing) = &self.entries[index] {
+            if existing.depth > depth && existing.hash == hash {
+                // Keep the existing deeper entry
+                return;
+            }
+        }
+        
+        self.entries[index] = Some(TTEntry { 
+            hash, 
+            depth, 
+            score, 
+            flag, 
+            best_move 
+        });
+    }
+    
+    fn probe(&self, hash: u64, depth: i32, alpha: i32, beta: i32) -> Option<(i32, (u8, u8))> {
+        let index = (hash as usize) % self.size;
+        
+        if let Some(entry) = &self.entries[index] {
+            // Check if this is the right entry (not a hash collision)
+            if entry.hash == hash && entry.depth >= depth {
+                match entry.flag {
+                    0 => { // Exact score
+                        return Some((entry.score, entry.best_move));
+                    }
+                    1 => { // Upper bound (score <= actual)
+                        if entry.score <= alpha {
+                            return Some((alpha, entry.best_move));
+                        }
+                    }
+                    2 => { // Lower bound (score >= actual)
+                        if entry.score >= beta {
+                            return Some((beta, entry.best_move));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        None
+    }
+    
+    // Clear the entire transposition table
+    fn clear(&mut self) {
+        for entry in self.entries.iter_mut() {
+            *entry = None;
+        }
+    }
+    
+    // Get statistics about the transposition table
+    fn stats(&self) -> (usize, usize) {
+        let total = self.size;
+        let used = self.entries.iter().filter(|e| e.is_some()).count();
+        (total, used)
+    }
+}
+
+fn init_transposition_table(size_mb: usize) {
+    let _ = TRANSPOSITION_TABLE.set(Arc::new(RwLock::new(TranspositionTable::new(size_mb))));
+}
+
+
+fn get_transposition_table() -> Arc<RwLock<TranspositionTable>> {
+    TRANSPOSITION_TABLE
+        .get_or_init(|| Arc::new(RwLock::new(TranspositionTable::new(16))))
+        .clone()
+}
+
+
+fn get_tt_move(hash: u64) -> Option<(u8, u8)> {
+    let tt = get_transposition_table();
+    let tt_guard = tt.read().unwrap(); // Use read lock for shared access
+    
+    let index = (hash as usize) % tt_guard.size;
+    
+    if let Some(entry) = &tt_guard.entries[index] {
+        if entry.hash == hash {
+            return Some(entry.best_move);
+        }
+    }
+    
+    None
+}
+
+
+fn get_best_move_from_tt(board_state: &BoardState, tt: &TranspositionTable) -> Option<(u8, u8)> {
+    let hash = compute_board_hash(board_state);
+    // Look up in TT (simplified - in reality you'd need depth and bounds)
+    let index = (hash as usize) % tt.size;
+    if let Some(entry) = &tt.entries[index] {
+        if entry.hash == hash {
+            return Some(entry.best_move);
+        }
+    }
+    None
+}
+
+
+struct ThreadSafeHistoryTable {
+    table: Box<[AtomicI32; 64 * 64]>,
+}
+
+impl ThreadSafeHistoryTable {
+    fn new() -> Self {
+        let table = Box::new([const { AtomicI32::new(0) }; 64 * 64]);
+        Self { table }
+    }
+    
+    fn get(&self, from: u8, to: u8) -> i32 {
+        let index = from as usize * 64 + to as usize;
+        self.table[index].load(Ordering::Relaxed)
+    }
+    
+    fn update(&self, from: u8, to: u8, depth: i32) {
+        let index = from as usize * 64 + to as usize;
+        let current = self.table[index].load(Ordering::Relaxed);
+        let new_value = current + depth * depth;
+        
+        let capped_value = if new_value > 1_000_000 { new_value / 2 } else { new_value };
+        self.table[index].store(capped_value, Ordering::Relaxed);
+    }
+}
+
+//END OF TRANSPOSITION TABLES-----------------------------------------------------------------------------
+
+
 //BOARD STATE---------------------------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
@@ -1426,6 +3003,7 @@ impl BoardState {
             black_queenside_castle: true,
             white_king_in_check,
             black_king_in_check,
+            en_passant_target: None,
         }
     }
     
@@ -1489,61 +3067,24 @@ fn main() {
     precompute_king_attacks();
     precompute_pawn_attacks();
     
+    // Initialize thread-safe structures
+    init_transposition_table(16);
+    init_history_table();
+    
     println!("=== Chess Engine ===");
     
-    // Test evaluation
+    // Run tests
+    test_performance();
     test_evaluation();
+    test_minimax();
     
-    // Create initial board state
-    let board_state = BoardState::new();
+    // Run the depth 6 test
+    test_depth_x(6);
     
-    println!("\n=== Initial Position ===");
-    print_board(&board_state);
-    println!("Evaluation: {}", evaluate_board_advanced(&board_state));
+    // Optional: Run additional tests
+    test_move_generation_depth_6();
+    benchmark_search();
     
-    // Test some moves and their evaluations
-    let white_moves = generate_moves(board_state.bitboards, true, &board_state); // Add &board_state
-    println!("\n=== Testing First Few Moves ===");
-    
-    for &(from, to) in white_moves.iter().take(3) {
-        let mut new_state = board_state;
-        if make_move(&mut new_state, from, to) {
-            let eval = evaluate_board_advanced(&new_state);
-            println!(
-                "Move: {} -> {} | Evaluation: {}",
-                square_to_coordinates(from),
-                square_to_coordinates(to),
-                eval
-            );
-            print_board(&new_state);
-        }
-    }
-    
-    // Test a capture scenario
-    println!("\n=== Testing Capture Scenario ===");
-    // Set up a position where white can capture a black knight
-    let mut capture_test = BoardState::new();
-    // Move a white pawn to e4
-    make_move(&mut capture_test, 52, 36); // e2 -> e4
-    // Move a black knight to f6 (where it can be captured)
-    make_move(&mut capture_test, 1, 21); // b8 -> f6
-    
-    print_board(&capture_test);
-    println!("Evaluation before capture: {}", evaluate_board_advanced(&capture_test));
-    
-    // Generate captures for white
-    let capture_moves = generate_moves(capture_test.bitboards, true, &capture_test); // Add &capture_test
-    let knight_captures: Vec<(u8, u8)> = capture_moves.iter()
-        .filter(|&&(_, to)| to == 21) // Moves that capture the knight on f6
-        .cloned()
-        .collect();
-    
-    if let Some(&(from, to)) = knight_captures.get(0) {
-        let mut after_capture = capture_test;
-        make_move(&mut after_capture, from, to);
-        println!("\nAfter capturing knight with {} -> {}:", 
-                square_to_coordinates(from), square_to_coordinates(to));
-        print_board(&after_capture);
-        println!("Evaluation after capture: {}", evaluate_board_advanced(&after_capture));
-    }
+    // Play a game
+    play_game();
 }

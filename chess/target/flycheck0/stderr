@@ -1,60 +1,12 @@
-   0.297190300s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint: fingerprint error for chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess)/Check { test: false }/TargetInner { name: "chess", doc: true, ..: with_path("C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\src\\main.rs", Edition2024) }
-   0.297249400s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\studentcoll\Downloads\chess_engine\chess\target\debug\.fingerprint\chess-acb58ba741c326b7\bin-chess`
-
-Caused by:
-    Не удается найти указанный файл. (os error 2)
-
-Stack backtrace:
-   0: git_midx_writer_dump
-   1: git_midx_writer_dump
-   2: git_midx_writer_dump
-   3: git_midx_writer_dump
-   4: git_filter_source_repo
-   5: git_filter_source_repo
-   6: git_filter_source_repo
-   7: git_filter_source_repo
-   8: git_filter_source_repo
-   9: git_filter_source_repo
-  10: git_filter_source_repo
-  11: git_libgit2_prerelease
-  12: <unknown>
-  13: <unknown>
-  14: <unknown>
-  15: <unknown>
-  16: git_midx_writer_dump
-  17: git_filter_source_repo
-  18: git_midx_writer_dump
-  19: BaseThreadInitThunk
-  20: RtlUserThreadStart
-   0.324582900s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint: fingerprint error for chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess)/Check { test: true }/TargetInner { name: "chess", doc: true, ..: with_path("C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\src\\main.rs", Edition2024) }
-   0.324612700s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\studentcoll\Downloads\chess_engine\chess\target\debug\.fingerprint\chess-fe748d04cb217941\test-bin-chess`
-
-Caused by:
-    Не удается найти указанный файл. (os error 2)
-
-Stack backtrace:
-   0: git_midx_writer_dump
-   1: git_midx_writer_dump
-   2: git_midx_writer_dump
-   3: git_midx_writer_dump
-   4: git_filter_source_repo
-   5: git_filter_source_repo
-   6: git_filter_source_repo
-   7: git_filter_source_repo
-   8: git_filter_source_repo
-   9: git_filter_source_repo
-  10: git_filter_source_repo
-  11: git_libgit2_prerelease
-  12: <unknown>
-  13: <unknown>
-  14: <unknown>
-  15: <unknown>
-  16: git_midx_writer_dump
-  17: git_filter_source_repo
-  18: git_midx_writer_dump
-  19: BaseThreadInitThunk
-  20: RtlUserThreadStart
-    Checking chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess)
-error: could not compile `chess` (bin "chess") due to 4 previous errors; 5 warnings emitted
-warning: build failed, waiting for other jobs to finish...
-error: could not compile `chess` (bin "chess" test) due to 4 previous errors; 5 warnings emitted
+   0.011007407s  INFO prepare_target{force=false package_id=chess v0.1.0 (/home/seysh/coding_projects/chess_engine/chess) target="chess"}: cargo::core::compiler::fingerprint: stale: changed "/home/seysh/coding_projects/chess_engine/chess/src/main.rs"
+   0.011013806s  INFO prepare_target{force=false package_id=chess v0.1.0 (/home/seysh/coding_projects/chess_engine/chess) target="chess"}: cargo::core::compiler::fingerprint:           (vs) "/home/seysh/coding_projects/chess_engine/chess/target/debug/.fingerprint/chess-f4216ed5cd231c9a/dep-bin-chess"
+   0.011015617s  INFO prepare_target{force=false package_id=chess v0.1.0 (/home/seysh/coding_projects/chess_engine/chess) target="chess"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1765319068, nanos: 452912338 } < FileTime { seconds: 1765319108, nanos: 357971916 }
+   0.011037222s  INFO prepare_target{force=false package_id=chess v0.1.0 (/home/seysh/coding_projects/chess_engine/chess) target="chess"}: cargo::core::compiler::fingerprint: fingerprint dirty for chess v0.1.0 (/home/seysh/coding_projects/chess_engine/chess)/Check { test: false }/TargetInner { name: "chess", doc: true, ..: with_path("/home/seysh/coding_projects/chess_engine/chess/src/main.rs", Edition2024) }
+   0.011041805s  INFO prepare_target{force=false package_id=chess v0.1.0 (/home/seysh/coding_projects/chess_engine/chess) target="chess"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/home/seysh/coding_projects/chess_engine/chess/target/debug/.fingerprint/chess-f4216ed5cd231c9a/dep-bin-chess", reference_mtime: FileTime { seconds: 1765319068, nanos: 452912338 }, stale: "/home/seysh/coding_projects/chess_engine/chess/src/main.rs", stale_mtime: FileTime { seconds: 1765319108, nanos: 357971916 } }))
+   0.011393302s  INFO prepare_target{force=false package_id=chess v0.1.0 (/home/seysh/coding_projects/chess_engine/chess) target="chess"}: cargo::core::compiler::fingerprint: stale: changed "/home/seysh/coding_projects/chess_engine/chess/src/main.rs"
+   0.011395457s  INFO prepare_target{force=false package_id=chess v0.1.0 (/home/seysh/coding_projects/chess_engine/chess) target="chess"}: cargo::core::compiler::fingerprint:           (vs) "/home/seysh/coding_projects/chess_engine/chess/target/debug/.fingerprint/chess-48e63a858e2ff49a/dep-test-bin-chess"
+   0.011396882s  INFO prepare_target{force=false package_id=chess v0.1.0 (/home/seysh/coding_projects/chess_engine/chess) target="chess"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1765319068, nanos: 452912338 } < FileTime { seconds: 1765319108, nanos: 357971916 }
+   0.011405353s  INFO prepare_target{force=false package_id=chess v0.1.0 (/home/seysh/coding_projects/chess_engine/chess) target="chess"}: cargo::core::compiler::fingerprint: fingerprint dirty for chess v0.1.0 (/home/seysh/coding_projects/chess_engine/chess)/Check { test: true }/TargetInner { name: "chess", doc: true, ..: with_path("/home/seysh/coding_projects/chess_engine/chess/src/main.rs", Edition2024) }
+   0.011408647s  INFO prepare_target{force=false package_id=chess v0.1.0 (/home/seysh/coding_projects/chess_engine/chess) target="chess"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/home/seysh/coding_projects/chess_engine/chess/target/debug/.fingerprint/chess-48e63a858e2ff49a/dep-test-bin-chess", reference_mtime: FileTime { seconds: 1765319068, nanos: 452912338 }, stale: "/home/seysh/coding_projects/chess_engine/chess/src/main.rs", stale_mtime: FileTime { seconds: 1765319108, nanos: 357971916 } }))
+    Checking chess v0.1.0 (/home/seysh/coding_projects/chess_engine/chess)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
