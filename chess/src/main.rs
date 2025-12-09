@@ -840,7 +840,7 @@ fn square_to_coordinates(square: u8) -> String {
     let file: u8 = (square % 8) as u8;
     let rank: u8 = (square / 8) as u8;
     let file_char: char = (b'a' + file) as char;
-    let rank_char: char = (b'8' - rank) as char; // Note: 0=a8, 63=h1 in your system
+    let rank_char: char = (b'8' - rank) as char; // 0=a8, 63=h1 in your system
     format!("{}{}", file_char, rank_char)
 }
 
@@ -1323,14 +1323,12 @@ impl ZobristTables {
         let mut castling_rights = [0u64; 4];
         let mut en_passant_file = [0u64; 8];
         
-        // Initialize piece-square table
         for piece in 0..12 {
             for square in 0..64 {
                 piece_square[piece][square] = rng.r#gen::<u64>();
             }
         }
         
-        // Initialize other tables
         let black_to_move = rng.r#gen::<u64>();
         
         for i in 0..4 {
@@ -1389,7 +1387,7 @@ fn compute_board_hash(board: &BoardState) -> u64 {
     
     // XOR in en passant target (if any)
     if let Some(ep_square) = board.en_passant_target {
-        let file = ep_square % 8; // Which file (0-7) has the en passant target
+        let file = ep_square % 8;
         hash ^= tables.en_passant_file[file as usize];
     }
     

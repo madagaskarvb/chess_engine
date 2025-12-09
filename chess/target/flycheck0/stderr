@@ -1,5 +1,5 @@
-   0.049357600s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint: fingerprint error for chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess)/Check { test: false }/TargetInner { name: "chess", doc: true, ..: with_path("C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\src\\main.rs", Edition2024) }
-   0.049406400s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\studentcoll\Downloads\chess_engine\chess\target\debug\.fingerprint\chess-acb58ba741c326b7\bin-chess`
+   0.297190300s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint: fingerprint error for chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess)/Check { test: false }/TargetInner { name: "chess", doc: true, ..: with_path("C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\src\\main.rs", Edition2024) }
+   0.297249400s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\studentcoll\Downloads\chess_engine\chess\target\debug\.fingerprint\chess-acb58ba741c326b7\bin-chess`
 
 Caused by:
     Не удается найти указанный файл. (os error 2)
@@ -26,8 +26,8 @@ Stack backtrace:
   18: git_midx_writer_dump
   19: BaseThreadInitThunk
   20: RtlUserThreadStart
-   0.076985200s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint: fingerprint error for chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess)/Check { test: true }/TargetInner { name: "chess", doc: true, ..: with_path("C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\src\\main.rs", Edition2024) }
-   0.077012500s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\studentcoll\Downloads\chess_engine\chess\target\debug\.fingerprint\chess-fe748d04cb217941\test-bin-chess`
+   0.324582900s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint: fingerprint error for chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess)/Check { test: true }/TargetInner { name: "chess", doc: true, ..: with_path("C:\\Users\\studentcoll\\Downloads\\chess_engine\\chess\\src\\main.rs", Edition2024) }
+   0.324612700s  INFO prepare_target{force=false package_id=chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess) target="chess"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\studentcoll\Downloads\chess_engine\chess\target\debug\.fingerprint\chess-fe748d04cb217941\test-bin-chess`
 
 Caused by:
     Не удается найти указанный файл. (os error 2)
@@ -55,6 +55,6 @@ Stack backtrace:
   19: BaseThreadInitThunk
   20: RtlUserThreadStart
     Checking chess v0.1.0 (C:\Users\studentcoll\Downloads\chess_engine\chess)
-error: could not compile `chess` (bin "chess" test) due to 4 previous errors; 5 warnings emitted
-warning: build failed, waiting for other jobs to finish...
 error: could not compile `chess` (bin "chess") due to 4 previous errors; 5 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `chess` (bin "chess" test) due to 4 previous errors; 5 warnings emitted
