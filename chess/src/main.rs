@@ -1,9 +1,9 @@
 use std::sync::OnceLock;
 use rand::Rng;
 use std::sync::{RwLock, Arc};
-use std::sync::atomic::{AtomicU64, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use rayon::prelude::*;
+use std::io::{self, BufRead, Write};
 
 
 const WP: usize = 0;
@@ -846,6 +846,44 @@ fn square_to_coordinates(square: u8) -> String {
     let file_char: char = (b'a' + file) as char;
     let rank_char: char = (b'8' - rank) as char; // 0=a8, 63=h1 in your system
     format!("{}{}", file_char, rank_char)
+}
+
+fn coordinates_to_square(coords: &str) -> Option<u8> {
+    if coords.len() < 2 {
+        return None;
+    }
+    let mut chars = coords.chars();
+    let file_char = chars.next()?;
+    let rank_char = chars.next()?;
+    
+    if file_char < 'a' || file_char > 'h' || rank_char < '1' || rank_char > '8' {
+        return None;
+    }
+    
+    let file = (file_char as u8) - b'a';
+    let rank = (rank_char as u8) - b'1';
+    
+    // Convert to our square representation (0=a8, 63=h1)
+    Some((7 - rank) * 8 + file)
+}
+
+fn move_to_uci(from: u8, to: u8) -> String {
+    format!("{}{}", square_to_coordinates(from), square_to_coordinates(to))
+}
+
+fn uci_to_move(uci_move: &str) -> Option<(u8, u8)> {
+    // Handle UCI move format: e2e4 or e7e8q (with promotion)
+    // We'll ignore promotion for now as the engine doesn't fully support it yet
+    if uci_move.len() < 4 {
+        return None;
+    }
+    let from_str = &uci_move[0..2];
+    let to_str = &uci_move[2..4];
+    
+    let from = coordinates_to_square(from_str)?;
+    let to = coordinates_to_square(to_str)?;
+    
+    Some((from, to))
 }
 
 
@@ -3061,6 +3099,602 @@ impl BoardState {
 
 //END OF BOARD STATE---------------------------------------------------------------------------------------
 
+//UCI PROTOCOL-------------------------------------------------------------------------------------------
+
+fn parse_fen(fen: &str) -> Option<BoardState> {
+    let parts: Vec<&str> = fen.split_whitespace().collect();
+    if parts.len() < 1 {
+        return None;
+    }
+    
+    let board_str = parts[0];
+    let mut bitboards = [0u64; 12];
+    
+    let mut rank = 0;
+    let mut file = 0;
+    
+    for ch in board_str.chars() {
+        if ch == '/' {
+            rank += 1;
+            file = 0;
+            continue;
+        }
+        
+        if ch.is_ascii_digit() {
+            file += ch.to_digit(10)? as usize;
+            continue;
+        }
+        
+        if file >= 8 || rank >= 8 {
+            return None;
+        }
+        
+        let square = (rank * 8 + file) as u8;
+        let piece_index = match ch {
+            'P' => Some(WP),
+            'N' => Some(WN),
+            'B' => Some(WB),
+            'R' => Some(WR),
+            'Q' => Some(WQ),
+            'K' => Some(WK),
+            'p' => Some(BP),
+            'n' => Some(BN),
+            'b' => Some(BB),
+            'r' => Some(BR),
+            'q' => Some(BQ),
+            'k' => Some(BK),
+            _ => None,
+        }?;
+        
+        set_bit(&mut bitboards[piece_index], square);
+        file += 1;
+    }
+    
+    let white_to_move = if parts.len() > 1 {
+        parts[1] == "w"
+    } else {
+        true
+    };
+    
+    let mut white_kingside_castle = false;
+    let mut white_queenside_castle = false;
+    let mut black_kingside_castle = false;
+    let mut black_queenside_castle = false;
+    
+    if parts.len() > 2 && parts[2] != "-" {
+        for ch in parts[2].chars() {
+            match ch {
+                'K' => white_kingside_castle = true,
+                'Q' => white_queenside_castle = true,
+                'k' => black_kingside_castle = true,
+                'q' => black_queenside_castle = true,
+                _ => {}
+            }
+        }
+    }
+    
+    let en_passant_target = if parts.len() > 3 && parts[3] != "-" {
+        coordinates_to_square(parts[3])
+    } else {
+        None
+    };
+    
+    let mut board_state = BoardState {
+        bitboards,
+        white_to_move,
+        white_kingside_castle,
+        white_queenside_castle,
+        black_kingside_castle,
+        black_queenside_castle,
+        white_king_in_check: false,
+        black_king_in_check: false,
+        en_passant_target,
+    };
+    
+    board_state.update_check_status();
+    
+    Some(board_state)
+}
+
+struct UCISearchParams {
+    depth: Option<u8>,
+    movetime: Option<u64>, // milliseconds
+    wtime: Option<u64>,    // milliseconds
+    btime: Option<u64>,    // milliseconds
+    winc: Option<u64>,     // milliseconds
+    binc: Option<u64>,     // milliseconds
+    movestogo: Option<u32>,
+    infinite: bool,
+}
+
+impl UCISearchParams {
+    fn new() -> Self {
+        Self {
+            depth: None,
+            movetime: None,
+            wtime: None,
+            btime: None,
+            winc: None,
+            binc: None,
+            movestogo: None,
+            infinite: false,
+        }
+    }
+    
+    fn parse_go_command(cmd: &str) -> Self {
+        let mut params = Self::new();
+        let parts: Vec<&str> = cmd.split_whitespace().collect();
+        let mut i = 0;
+        
+        while i < parts.len() {
+            match parts[i] {
+                "depth" if i + 1 < parts.len() => {
+                    if let Ok(d) = parts[i + 1].parse::<u8>() {
+                        params.depth = Some(d);
+                    }
+                    i += 2;
+                }
+                "movetime" if i + 1 < parts.len() => {
+                    if let Ok(mt) = parts[i + 1].parse::<u64>() {
+                        params.movetime = Some(mt);
+                    }
+                    i += 2;
+                }
+                "wtime" if i + 1 < parts.len() => {
+                    if let Ok(wt) = parts[i + 1].parse::<u64>() {
+                        params.wtime = Some(wt);
+                    }
+                    i += 2;
+                }
+                "btime" if i + 1 < parts.len() => {
+                    if let Ok(bt) = parts[i + 1].parse::<u64>() {
+                        params.btime = Some(bt);
+                    }
+                    i += 2;
+                }
+                "winc" if i + 1 < parts.len() => {
+                    if let Ok(wi) = parts[i + 1].parse::<u64>() {
+                        params.winc = Some(wi);
+                    }
+                    i += 2;
+                }
+                "binc" if i + 1 < parts.len() => {
+                    if let Ok(bi) = parts[i + 1].parse::<u64>() {
+                        params.binc = Some(bi);
+                    }
+                    i += 2;
+                }
+                "movestogo" if i + 1 < parts.len() => {
+                    if let Ok(mtg) = parts[i + 1].parse::<u32>() {
+                        params.movestogo = Some(mtg);
+                    }
+                    i += 2;
+                }
+                "infinite" => {
+                    params.infinite = true;
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+        
+        params
+    }
+    
+    fn calculate_time_limit(&self, white_to_move: bool) -> Option<Duration> {
+        if self.infinite {
+            return None;
+        }
+        
+        if let Some(mt) = self.movetime {
+            return Some(Duration::from_millis(mt));
+        }
+        
+        let time_left = if white_to_move {
+            self.wtime?
+        } else {
+            self.btime?
+        };
+        
+        let increment = if white_to_move {
+            self.winc.unwrap_or(0)
+        } else {
+            self.binc.unwrap_or(0)
+        };
+        
+        let moves_to_go = self.movestogo.unwrap_or(20) as u64;
+        
+        // Simple time management: use time_left / moves_to_go + increment
+        let time_per_move = time_left / moves_to_go.max(1) + increment;
+        
+        // Use 80% of calculated time to leave buffer
+        Some(Duration::from_millis((time_per_move * 80) / 100))
+    }
+}
+
+static SEARCH_STOP: AtomicBool = AtomicBool::new(false);
+
+fn find_best_move_with_time(
+    board_state: &BoardState,
+    max_depth: u8,
+    time_limit: Option<Duration>,
+) -> Option<(u8, u8)> {
+    SEARCH_STOP.store(false, Ordering::Relaxed);
+    
+    let start_time = Instant::now();
+    let mut best_move = None;
+    let mut best_score = if board_state.white_to_move { i32::MIN } else { i32::MAX };
+    let mut nodes_searched = 0u64;
+    
+    // Output initial info to show engine is working
+    println!("info depth 0");
+    io::stdout().flush().ok();
+    
+    // Iterative deepening with time management
+    for depth in 1..=max_depth {
+        if SEARCH_STOP.load(Ordering::Relaxed) {
+            break;
+        }
+        
+        // Check time before starting new depth
+        if let Some(limit) = time_limit {
+            let elapsed = start_time.elapsed();
+            if elapsed >= limit {
+                break;
+            }
+            // Reserve some time for the next iteration
+            let remaining = limit.saturating_sub(elapsed);
+            if remaining < Duration::from_millis(50) {
+                break; // Not enough time for another depth
+            }
+        }
+        
+        // Output info before starting depth search
+        let time_ms = start_time.elapsed().as_millis() as u64;
+        if time_ms > 0 {
+            let nps = (nodes_searched * 1000) / time_ms.max(1);
+            println!("info depth {} nodes {} time {} nps {}",
+                depth - 1,
+                nodes_searched,
+                time_ms,
+                nps
+            );
+            io::stdout().flush().ok();
+        }
+        
+        if let Some(mv) = find_best_move(board_state, depth) {
+            best_move = Some(mv);
+            
+            // Get evaluation after the move
+            let mut test_state = *board_state;
+            if make_move(&mut test_state, mv.0, mv.1).is_some() {
+                best_score = evaluate_board_advanced(&test_state);
+            }
+            
+            // Estimate nodes searched (rough approximation)
+            nodes_searched = estimate_nodes_searched(board_state, depth);
+            let time_ms = start_time.elapsed().as_millis() as u64;
+            let nps = if time_ms > 0 { (nodes_searched * 1000) / time_ms.max(1) } else { 0 };
+            
+            // Build PV - for now just show the best move, but format it properly
+            let pv_str = move_to_uci(mv.0, mv.1);
+            
+            // Output UCI info with proper format
+            println!("info depth {} score cp {} nodes {} time {} nps {} pv {}",
+                depth,
+                best_score,
+                nodes_searched,
+                time_ms,
+                nps,
+                pv_str
+            );
+            
+            io::stdout().flush().ok();
+            
+            // If we found a mate, we can stop early
+            if best_score.abs() > 9000 {
+                break;
+            }
+        } else {
+            // No move found - might be checkmate/stalemate
+            break;
+        }
+        
+        // Check if we should stop after this depth
+        if SEARCH_STOP.load(Ordering::Relaxed) {
+            break;
+        }
+        
+        if let Some(limit) = time_limit {
+            if start_time.elapsed() >= limit {
+                break;
+            }
+        }
+    }
+    
+    best_move
+}
+
+fn parse_xboard_move(move_str: &str) -> Option<(u8, u8)> {
+    // XBoard moves are in format like "d2d4" or "e7e8q" (with promotion)
+    if move_str.len() < 4 {
+        return None;
+    }
+    
+    let from_coords = &move_str[0..2];
+    let to_coords = &move_str[2..4];
+    
+    let from = coordinates_to_square(from_coords)?;
+    let to = coordinates_to_square(to_coords)?;
+    
+    Some((from, to))
+}
+
+fn uci_loop() {
+    // Ensure stdout is line buffered for UCI protocol
+    let stdout = io::stdout();
+    let mut stdout_handle = stdout.lock();
+    
+    let mut board_state = BoardState::new();
+    let stdin = io::stdin();
+    let mut stdin_handle = stdin.lock();
+    let mut buffer = String::new();
+    
+    // Track protocol mode
+    let mut xboard_mode = false;
+    let mut time_remaining = 30000u64; // centiseconds
+    let mut opponent_time = 30000u64;
+    let mut moves_per_session = 40u32;
+    let mut base_time = 300u64; // seconds
+    let mut increment = 0u64; // seconds
+    
+    loop {
+        buffer.clear();
+        match stdin_handle.read_line(&mut buffer) {
+            Ok(0) => break, // EOF
+            Ok(_) => {
+                let line = buffer.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.is_empty() {
+                    continue;
+                }
+                
+                // Handle XBoard protocol
+                if xboard_mode || parts[0] == "xboard" {
+                    match parts[0] {
+                        "xboard" => {
+                            xboard_mode = true;
+                            // Don't send response, just switch mode
+                        }
+                        "protover" => {
+                            if parts.len() > 1 && parts[1] == "2" {
+                                writeln!(stdout_handle, "feature done=0").ok();
+                                writeln!(stdout_handle, "feature myname=\"Rust Chess Engine\"").ok();
+                                writeln!(stdout_handle, "feature done=1").ok();
+                                stdout_handle.flush().ok();
+                            }
+                        }
+                        "new" => {
+                            board_state = BoardState::new();
+                            // Clear transposition table
+                            if let Some(tt) = TRANSPOSITION_TABLE.get() {
+                                tt.write().unwrap().clear();
+                            }
+                        }
+                        "time" => {
+                            if parts.len() > 1 {
+                                if let Ok(t) = parts[1].parse::<u64>() {
+                                    time_remaining = t;
+                                }
+                            }
+                        }
+                        "otim" => {
+                            if parts.len() > 1 {
+                                if let Ok(t) = parts[1].parse::<u64>() {
+                                    opponent_time = t;
+                                }
+                            }
+                        }
+                        "level" => {
+                            // level <moves> <minutes> <seconds> or level <moves> <base> <inc>
+                            // Format: level 0 5 0 means 0 moves in 5 minutes 0 seconds
+                            if parts.len() >= 3 {
+                                if let (Ok(moves), Ok(base), Ok(inc)) = (
+                                    parts[1].parse::<u32>(),
+                                    parts[2].parse::<u64>(),
+                                    if parts.len() > 3 { parts[3].parse::<u64>() } else { Ok(0) }
+                                ) {
+                                    moves_per_session = if moves == 0 { 40 } else { moves }; // Default to 40 if 0
+                                    base_time = base * 60 + inc; // Convert to total seconds
+                                    increment = 0; // Increment handled separately
+                                }
+                            }
+                        }
+                        "post" => {
+                            // Show thinking - already enabled by default
+                        }
+                        "hard" => {
+                            // Use all available time
+                        }
+                        "easy" => {
+                            // Don't use all available time
+                        }
+                        "random" => {
+                            // Random mode - ignore for now
+                        }
+                        "quit" => {
+                            break;
+                        }
+                        _ => {
+                            // Try to parse as a move (e.g., "d2d4")
+                            if let Some((from, to)) = parse_xboard_move(parts[0]) {
+                                // Make the opponent's move
+                                if make_move(&mut board_state, from, to).is_some() {
+                                    // Calculate time limit from time remaining
+                                    // Use time_remaining (in centiseconds) or calculate from level
+                                    let time_limit_ms = if time_remaining > 0 {
+                                        // Use 80% of remaining time, convert centiseconds to milliseconds
+                                        Duration::from_millis((time_remaining * 8) / 10)
+                                    } else if moves_per_session > 0 {
+                                        // Calculate from level: base_time is in seconds
+                                        let time_per_move = (base_time * 1000) / moves_per_session as u64;
+                                        Duration::from_millis(time_per_move)
+                                    } else {
+                                        Duration::from_secs(5)
+                                    };
+                                    
+                                    // Find best move (use reasonable depth)
+                                    let result = find_best_move_with_time(&board_state, 4, Some(time_limit_ms));
+                                    
+                                    if let Some((from_move, to_move)) = result {
+                                        // Output move in XBoard format
+                                        let move_str = format!("{}{}", 
+                                            square_to_coordinates(from_move),
+                                            square_to_coordinates(to_move)
+                                        );
+                                        writeln!(stdout_handle, "move {}", move_str).ok();
+                                        stdout_handle.flush().ok();
+                                    } else {
+                                        // Try fallback
+                                        let moves = generate_moves(board_state.bitboards, board_state.white_to_move, &board_state);
+                                        let legal_moves: Vec<(u8, u8)> = moves.into_iter()
+                                            .filter(|&(from, to)| is_move_legal_fast(&board_state, from, to))
+                                            .collect();
+                                        
+                                        if let Some(&(from_move, to_move)) = legal_moves.first() {
+                                            let move_str = format!("{}{}", 
+                                                square_to_coordinates(from_move),
+                                                square_to_coordinates(to_move)
+                                            );
+                                            writeln!(stdout_handle, "move {}", move_str).ok();
+                                            stdout_handle.flush().ok();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+                
+                // Handle UCI protocol
+                match parts[0] {
+                    "uci" => {
+                        writeln!(stdout_handle, "id name Rust Chess Engine").ok();
+                        writeln!(stdout_handle, "id author Chess Engine Developer").ok();
+                        writeln!(stdout_handle, "uciok").ok();
+                        stdout_handle.flush().ok();
+                    }
+                    "isready" => {
+                        writeln!(stdout_handle, "readyok").ok();
+                        stdout_handle.flush().ok();
+                    }
+                    "ucinewgame" => {
+                        board_state = BoardState::new();
+                        // Clear transposition table
+                        if let Some(tt) = TRANSPOSITION_TABLE.get() {
+                            tt.write().unwrap().clear();
+                        }
+                    }
+                    "position" => {
+                        if parts.len() < 2 {
+                            continue;
+                        }
+                        
+                        if parts[1] == "startpos" {
+                            board_state = BoardState::new();
+                            
+                            // Parse moves if any
+                            if parts.len() > 2 && parts[2] == "moves" {
+                                for i in 3..parts.len() {
+                                    if let Some((from, to)) = uci_to_move(parts[i]) {
+                                        if make_move(&mut board_state, from, to).is_none() {
+                                            eprintln!("Invalid move: {}", parts[i]);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        } else if parts[1] == "fen" {
+                            // Parse FEN string
+                            let fen_parts: Vec<&str> = parts[2..].iter().take_while(|&&s| s != "moves").cloned().collect();
+                            let fen = fen_parts.join(" ");
+                            
+                            if let Some(new_state) = parse_fen(&fen) {
+                                board_state = new_state;
+                                
+                                // Parse moves if any
+                                if let Some(moves_idx) = parts.iter().position(|&s| s == "moves") {
+                                    for i in moves_idx + 1..parts.len() {
+                                        if let Some((from, to)) = uci_to_move(parts[i]) {
+                                            if make_move(&mut board_state, from, to).is_none() {
+                                                eprintln!("Invalid move: {}", parts[i]);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "go" => {
+                        let go_cmd = line;
+                        let params = UCISearchParams::parse_go_command(go_cmd);
+                        
+                        // Use a reasonable default depth and time limit
+                        // Start with depth 3 for faster response, increase if time allows
+                        let max_depth = params.depth.unwrap_or(3);
+                        let time_limit = params.calculate_time_limit(board_state.white_to_move);
+                        
+                        // Ensure we have at least some time limit to prevent hanging
+                        // Use shorter default timeout for faster response
+                        let effective_time_limit = time_limit.or_else(|| Some(Duration::from_secs(5)));
+                        
+                        // Run search synchronously (UCI engines typically block on go command)
+                        let result = find_best_move_with_time(&board_state, max_depth, effective_time_limit);
+                        
+                        if let Some((from, to)) = result {
+                            writeln!(stdout_handle, "bestmove {}", move_to_uci(from, to)).ok();
+                        } else {
+                            // Try to find any legal move as fallback
+                            let moves = generate_moves(board_state.bitboards, board_state.white_to_move, &board_state);
+                            let legal_moves: Vec<(u8, u8)> = moves.into_iter()
+                                .filter(|&(from, to)| is_move_legal_fast(&board_state, from, to))
+                                .collect();
+                            
+                            if let Some(&(from, to)) = legal_moves.first() {
+                                writeln!(stdout_handle, "bestmove {}", move_to_uci(from, to)).ok();
+                            } else {
+                                writeln!(stdout_handle, "bestmove 0000").ok(); // No move found (checkmate/stalemate)
+                            }
+                        }
+                        
+                        stdout_handle.flush().ok();
+                    }
+                    "stop" => {
+                        SEARCH_STOP.store(true, Ordering::Relaxed);
+                    }
+                    "quit" => {
+                        break;
+                    }
+                    _ => {
+                        // Ignore unknown commands
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+//END OF UCI PROTOCOL------------------------------------------------------------------------------------
+
 
 fn main() {
     precompute_knight_attacks();
@@ -3071,20 +3705,21 @@ fn main() {
     init_transposition_table(16);
     init_history_table();
     
-    println!("=== Chess Engine ===");
+    // Check if running in UCI mode (default) or test mode
+    let args: Vec<String> = std::env::args().collect();
     
-    // Run tests
-    test_performance();
-    test_evaluation();
-    test_minimax();
-    
-    // Run the depth 6 test
-    test_depth_x(6);
-    
-    // Optional: Run additional tests
-    test_move_generation_depth_6();
-    benchmark_search();
-    
-    // Play a game
-    play_game();
+    if args.len() > 1 && args[1] == "test" {
+        // Test mode - run all tests
+        println!("=== Chess Engine - Test Mode ===");
+        test_performance();
+        test_evaluation();
+        test_minimax();
+        test_depth_x(6);
+        test_move_generation_depth_6();
+        benchmark_search();
+        play_game();
+    } else {
+        // UCI mode - default
+        uci_loop();
+    }
 }
