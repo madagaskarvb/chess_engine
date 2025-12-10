@@ -3649,7 +3649,7 @@ fn uci_loop() {
                         
                         // Use a reasonable default depth and time limit
                         // Start with depth 3 for faster response, increase if time allows
-                        let max_depth = params.depth.unwrap_or(3);
+                        let max_depth = params.depth.unwrap_or(6);
                         let time_limit = params.calculate_time_limit(board_state.white_to_move);
                         
                         // Ensure we have at least some time limit to prevent hanging
