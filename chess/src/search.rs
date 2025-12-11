@@ -50,7 +50,6 @@ pub fn find_best_move(board_state: &BoardState, depth: u8) -> Option<(u8, u8)> {
                     temp_state.board.black_king_in_check
                 };
                 
-                // The move is legal if it doesn't leave our king in check
                 !our_king_in_check
             } else {
                 false
@@ -94,13 +93,10 @@ pub fn find_best_move(board_state: &BoardState, depth: u8) -> Option<(u8, u8)> {
                 square_to_coordinates(*from), square_to_coordinates(*to));
         }
         
-        // Make the move
         search_state.make_move(*from, *to);
         
-        // Evaluate the position
         let value = minimax(&mut search_state, depth as i32 - 1, i32::MIN, i32::MAX, !board_state.white_to_move);
         
-        // Unmake the move
         search_state.unmake_move();
         
         if DEBUG {
@@ -264,10 +260,10 @@ pub fn minimax(
         if in_check {
             // Checkmate - return very bad score for the player who is checkmated
             return if search_state.board.white_to_move {
-                // White is checkmated - very bad for white
+                // White is checkmated
                 i32::MIN + 1
             } else {
-                // Black is checkmated - very good for white
+                // Black is checkmated
                 i32::MAX - 1
             };
         } else {
@@ -277,7 +273,7 @@ pub fn minimax(
     }
     
     if maximizing_player {
-        // Maximizing player (white in this context)
+        // Maximizing player (white)
         let mut max_eval = i32::MIN;
         let mut moves_examined = 0;
         let mut pruned_moves = 0;
@@ -285,7 +281,6 @@ pub fn minimax(
         for (_, from, to) in &moves_with_scores {
             moves_examined += 1;
             
-            // Make the move
             search_state.make_move(*from, *to);
             
             if DEBUG && depth >= 3 {
@@ -293,13 +288,10 @@ pub fn minimax(
                     depth, moves_examined, square_to_coordinates(*from), square_to_coordinates(*to));
             }
             
-            // Recursively evaluate
             let eval = minimax(search_state, depth - 1, alpha, beta, false);
             
-            // Unmake the move
             search_state.unmake_move();
             
-            // Update max evaluation
             max_eval = max_eval.max(eval);
             
             if DEBUG && depth >= 3 {

@@ -64,7 +64,6 @@ pub fn order_moves(board: &BoardState, moves: &[(u8, u8)]) -> Vec<(i32, u8, u8)>
         }
         
         // Add some positional bonuses
-        // Center control for knights
         if let Some(piece) = get_piece_at_square(&board.bitboards, from) {
             if piece == WN || piece == BN {
                 let center_squares = [27, 28, 35, 36]; // d4, e4, d5, e5
