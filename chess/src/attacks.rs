@@ -16,7 +16,7 @@ pub fn precompute_knight_attacks() {
     
     for square in 0..64 {
         let (rank, file) = (square / 8, square % 8);
-        let mut attack_mask = 0;
+        let mut attack_mask: u64 = 0;
         
         for &(dr, df) in &knight_moves {
             let new_rank = rank as i32 + dr;

@@ -84,8 +84,8 @@ pub fn generate_knight_moves(board: &[u64; 12], moves: &mut Vec<(u8, u8)>, white
         let from_square = get_lsb(knights_copy).unwrap();
         clear_bit(&mut knights_copy, from_square);
         
-        let attacks = KNIGHT_ATTACKS.get().unwrap()[from_square as usize];
-        let mut attacks_copy = attacks;
+        let attacks: u64 = KNIGHT_ATTACKS.get().unwrap()[from_square as usize];
+        let mut attacks_copy: u64 = attacks;
         while attacks_copy != 0 {
             let target_square = get_lsb(attacks_copy).unwrap();
             clear_bit(&mut attacks_copy, target_square);
