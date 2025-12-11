@@ -10,12 +10,9 @@ use crate::evaluation::{evaluate_board_advanced, evaluate_board_fast};
 use crate::printing::square_to_coordinates;
 use crate::zobrist::compute_board_hash;
 
-static DEBUG: bool = false;
 
 pub fn find_best_move(board_state: &BoardState, depth: u8) -> Option<(u8, u8)> {
-    if DEBUG {
-        println!("\n=== Starting search at depth {} ===", depth);
-        println!("Position evaluation: {}", evaluate_board_advanced(board_state));
+intln!("Position evaluation: {}", evaluate_board_advanced(board_state));
     }
     
     let mut search_state = SearchState {
@@ -28,10 +25,6 @@ pub fn find_best_move(board_state: &BoardState, depth: u8) -> Option<(u8, u8)> {
     
     // Generate all legal moves
     let moves = generate_moves(search_state.board.bitboards, search_state.board.white_to_move, &search_state.board);
-    
-    if DEBUG {
-        println!("[Root] Raw moves generated: {}", moves.len());
-    }
     
     // Filter for legal moves (those that don't leave king in check)
     let legal_moves: Vec<(u8, u8)> = moves.into_iter()
@@ -57,41 +50,16 @@ pub fn find_best_move(board_state: &BoardState, depth: u8) -> Option<(u8, u8)> {
         })
         .collect();
     
-    if DEBUG {
-        println!("[Root] Legal moves: {}", legal_moves.len());
-        println!("[Root] Moves list:");
-        for &(from, to) in &legal_moves {
-            println!("  {} -> {}", square_to_coordinates(from), square_to_coordinates(to));
-        }
-    }
-    
     if legal_moves.is_empty() {
-        if DEBUG {
-            println!("[Root] No legal moves found!");
-        }
         return None;
     }
     
     // Order moves at root
     let ordered_moves = order_moves(&search_state.board, &legal_moves);
     
-    if DEBUG {
-        println!("[Root] Ordered moves (top 10):");
-        for (i, (score, from, to)) in ordered_moves.iter().take(10).enumerate() {
-            println!("  {}. {} -> {} (score: {})", 
-                i + 1, square_to_coordinates(*from), square_to_coordinates(*to), score);
-        }
-    }
-    
     let mut move_counter = 0;
     for (_, from, to) in &ordered_moves {
         move_counter += 1;
-        
-        if DEBUG {
-            println!("\n[Root] Evaluating move {} of {}: {} -> {}", 
-                move_counter, ordered_moves.len(), 
-                square_to_coordinates(*from), square_to_coordinates(*to));
-        }
         
         search_state.make_move(*from, *to);
         
@@ -99,40 +67,21 @@ pub fn find_best_move(board_state: &BoardState, depth: u8) -> Option<(u8, u8)> {
         
         search_state.unmake_move();
         
-        if DEBUG {
-            println!("[Root] Move {} -> {} evaluation: {}", 
-                square_to_coordinates(*from), square_to_coordinates(*to), value);
-        }
-        
         if board_state.white_to_move {
             // White wants to maximize the score
             if value > best_value || best_move.is_none() {
-                if DEBUG && best_move.is_some() {
-                    println!("[Root] New best move! Old: {}, New: {}", best_value, value);
-                }
+
                 best_value = value;
                 best_move = Some((*from, *to));
             }
         } else {
             // Black wants to minimize the score
             if value < best_value || best_move.is_none() {
-                if DEBUG && best_move.is_some() {
-                    println!("[Root] New best move! Old: {}, New: {}", best_value, value);
-                }
                 best_value = value;
                 best_move = Some((*from, *to));
             }
         }
     }
-    
-    if DEBUG {
-        if let Some((from, to)) = best_move {
-            println!("\n[Root] Best move found: {} -> {} with evaluation: {}", 
-                square_to_coordinates(from), square_to_coordinates(to), best_value);
-        }
-        println!("=== End search at depth {} ===\n", depth);
-    }
-    
     best_move
 }
 
@@ -184,9 +133,6 @@ pub fn minimax(
 ) -> i32 {
     // Base case: reached maximum depth or terminal position
     if depth == 0 {
-        if DEBUG && depth == 0 {
-            println!("  [Leaf node reached, evaluating position]");
-        }
         return evaluate_board_advanced(&search_state.board);
     }
     
@@ -196,10 +142,6 @@ pub fn minimax(
         search_state.board.white_to_move,
         &search_state.board,
     );
-    
-    if DEBUG {
-        println!("  [Depth {}] Raw moves generated: {}", depth, moves.len());
-    }
     
     // Filter for legal moves (those that don't leave king in check)
     let legal_moves: Vec<(u8, u8)> = moves.into_iter()
@@ -221,32 +163,9 @@ pub fn minimax(
             }
         })
         .collect();
-    
-    if DEBUG {
-        println!("  [Depth {}] Legal moves after check: {}", depth, legal_moves.len());
-        
-        if depth >= 3 && legal_moves.len() > 0 {
-            println!("    First 5 moves:");
-            for &(from, to) in legal_moves.iter().take(5) {
-                println!("      {} -> {}", square_to_coordinates(from), square_to_coordinates(to));
-            }
-            if legal_moves.len() > 5 {
-                println!("      ... and {} more", legal_moves.len() - 5);
-            }
-        }
-    }
+
     
     let moves_with_scores: Vec<(i32, u8, u8)> = order_moves(&search_state.board, &legal_moves);
-    
-    if DEBUG && depth >= 3 && moves_with_scores.len() > 0 {
-        println!("    After ordering - top 5 moves:");
-        for (score, from, to) in moves_with_scores.iter().take(5) {
-            println!("      {} -> {} (score: {})", 
-                square_to_coordinates(*from), 
-                square_to_coordinates(*to), 
-                score);
-        }
-    }
     
     // Check for terminal positions
     if legal_moves.is_empty() {
@@ -283,39 +202,19 @@ pub fn minimax(
             
             search_state.make_move(*from, *to);
             
-            if DEBUG && depth >= 3 {
-                println!("    [Depth {}] Examining move {}: {} -> {}", 
-                    depth, moves_examined, square_to_coordinates(*from), square_to_coordinates(*to));
-            }
-            
             let eval = minimax(search_state, depth - 1, alpha, beta, false);
             
             search_state.unmake_move();
             
             max_eval = max_eval.max(eval);
             
-            if DEBUG && depth >= 3 {
-                println!("    [Depth {}] Move {} -> {} evaluation: {} (alpha: {}, beta: {})", 
-                    depth, square_to_coordinates(*from), square_to_coordinates(*to), eval, alpha, beta);
-            }
-            
             // Alpha-beta pruning
             alpha = alpha.max(eval);
             if beta <= alpha {
-                if DEBUG && depth >= 3 {
-                    println!("    [Depth {}] BETA CUTOFF after move {} -> {} (beta: {}, alpha: {})", 
-                        depth, square_to_coordinates(*from), square_to_coordinates(*to), beta, alpha);
-                }
                 pruned_moves = moves_with_scores.len() - moves_examined;
                 break; // Beta cutoff
             }
-        }
-        
-        if DEBUG && depth >= 3 {
-            println!("  [Depth {}] Examined {} moves, pruned {} moves, max_eval: {}", 
-                depth, moves_examined, pruned_moves, max_eval);
-        }
-        
+        }  
         max_eval
     } else {
         // Minimizing player (black in this context)
@@ -329,11 +228,6 @@ pub fn minimax(
             // Make the move
             search_state.make_move(*from, *to);
             
-            if DEBUG && depth >= 3 {
-                println!("    [Depth {}] Examining move {}: {} -> {}", 
-                    depth, moves_examined, square_to_coordinates(*from), square_to_coordinates(*to));
-            }
-            
             // Recursively evaluate
             let eval = minimax(search_state, depth - 1, alpha, beta, true);
             
@@ -343,28 +237,13 @@ pub fn minimax(
             // Update min evaluation
             min_eval = min_eval.min(eval);
             
-            if DEBUG && depth >= 3 {
-                println!("    [Depth {}] Move {} -> {} evaluation: {} (alpha: {}, beta: {})", 
-                    depth, square_to_coordinates(*from), square_to_coordinates(*to), eval, alpha, beta);
-            }
-            
             // Alpha-beta pruning
             beta = beta.min(eval);
             if beta <= alpha {
-                if DEBUG && depth >= 3 {
-                    println!("    [Depth {}] ALPHA CUTOFF after move {} -> {} (beta: {}, alpha: {})", 
-                        depth, square_to_coordinates(*from), square_to_coordinates(*to), beta, alpha);
-                }
                 pruned_moves = moves_with_scores.len() - moves_examined;
                 break; // Alpha cutoff
             }
         }
-        
-        if DEBUG && depth >= 3 {
-            println!("  [Depth {}] Examined {} moves, pruned {} moves, min_eval: {}", 
-                depth, moves_examined, pruned_moves, min_eval);
-        }
-        
         min_eval
     }
 }
